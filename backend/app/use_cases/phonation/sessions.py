@@ -20,6 +20,7 @@ async def save_phonation_session(
     )
     session.add(phonation_session)
     await session.flush()
+    await session.refresh(phonation_session)
 
     for exercise in data["exercises"]:
         session.add(ExerciseResult(
