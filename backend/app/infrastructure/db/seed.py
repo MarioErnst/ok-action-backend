@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.domain.entities.role import Role
 from app.domain.entities.loudness_preset import LoudnessPreset
+from app.domain.entities.user import User
+from app.infrastructure.security.hashing import hash_password
 from config import settings
 
 
@@ -83,6 +85,30 @@ def seed():
                 print(f"Preset '{preset_data['label']}' created")
             else:
                 print(f"Preset '{preset_data['label']}' already exists")
+
+        # Seed dev user
+        if settings.dev_user_email:
+            existing_user = session.execute(
+                select(User).where(User.email == settings.dev_user_email)
+            ).scalar_one_or_none()
+
+            if not existing_user:
+                user_role = session.execute(
+                    select(Role).where(Role.name == "user")
+                ).scalar_one_or_none()
+
+                if user_role:
+                    session.add(User(
+                        email=settings.dev_user_email,
+                        password_hash=hash_password(settings.dev_user_password),
+                        full_name=settings.dev_user_full_name,
+                        role_id=user_role.id,
+                    ))
+                    print(f"Dev user '{settings.dev_user_email}' created")
+                else:
+                    print("Warning: 'user' role not found, skipping dev user")
+            else:
+                print(f"Dev user '{settings.dev_user_email}' already exists")
 
         session.commit()
         print("Seed completed")

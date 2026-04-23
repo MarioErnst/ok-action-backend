@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = Field(default_factory=list)
 
+    # Dev user
+    dev_user_email: str = ""
+    dev_user_password: str = ""
+    dev_user_full_name: str = ""
+
     @property
     def cloud_sql_instance_connection_name(self) -> str:
         return f"{self.gcp_project_id}:{self.gcp_region}:{self.gcp_instance_name}"
