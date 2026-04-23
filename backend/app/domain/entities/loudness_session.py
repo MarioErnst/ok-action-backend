@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import ForeignKey, Integer, Numeric
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,7 +23,7 @@ class LoudnessSession(Base):
     peak_db: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
     band_time_ms: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
     user: Mapped["User"] = relationship(back_populates="loudness_sessions")

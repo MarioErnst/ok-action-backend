@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import ForeignKey, Numeric
+from sqlalchemy import DateTime, ForeignKey, Numeric
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,7 +19,7 @@ class PhonationSession(Base):
     avg_hz: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
     observations: Mapped[dict] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
     user: Mapped["User"] = relationship(back_populates="phonation_sessions")
