@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.infrastructure.db.session import check_db_connection, dispose_connector
 from app.presentation.routers.auth import router as auth_router
+from app.presentation.routers.phonation import router as phonation_router
+from app.presentation.routers.loudness import router as loudness_router
 from config import settings
 
 
@@ -28,6 +30,8 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(phonation_router)
+app.include_router(loudness_router)
 
 
 @app.get("/health")
