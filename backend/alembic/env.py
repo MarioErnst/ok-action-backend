@@ -5,6 +5,7 @@ from sqlalchemy import pool, create_engine
 from google.cloud.sql.connector import Connector
 
 from app.infrastructure.db.base import Base
+import app.domain.entities  # noqa: F401 — registers models with Base.metadata
 from config import settings
 
 config = context.config
