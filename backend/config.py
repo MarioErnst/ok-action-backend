@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = Field(default_factory=list)
 
+    # Gemini AI
+    gemini_api_key: str
+
     # Dev user
     dev_user_email: str = ""
     dev_user_password: str = ""
