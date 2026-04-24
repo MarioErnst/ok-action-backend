@@ -30,3 +30,4 @@ class User(Base):
     phonation_sessions: Mapped[list["PhonationSession"]] = relationship(back_populates="user")
     loudness_sessions: Mapped[list["LoudnessSession"]] = relationship(back_populates="user")
     loudness_presets: Mapped[list["LoudnessPreset"]] = relationship(back_populates="user")
+    accentuation_sessions: Mapped[list["AccentuationSession"]] = relationship(back_populates="user")
