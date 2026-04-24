@@ -103,8 +103,8 @@ class GeminiAccentuationService:
         text_part = types.Part.from_text(text=prompt_text)
 
         try:
-            response = self._client.models.generate_content(
-                model="gemini-2.0-flash",
+            response = await self._client.aio.models.generate_content(
+                model="gemini-2.5-flash",
                 contents=[types.Content(role="user", parts=[audio_part, text_part])],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
