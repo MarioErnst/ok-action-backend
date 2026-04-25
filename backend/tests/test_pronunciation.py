@@ -69,3 +69,80 @@ async def test_save_pronunciation_session():
 
     result = await save_pronunciation_session(data, fake_user, fake_db)
     fake_db.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_phrase_endpoint_returns_evaluation():
+    fake_user = _make_fake_user()
+
+    fake_gemini_response = {
+        "overall_score": 85,
+        "vowel_score": 88,
+        "consonant_score": 82,
+        "fluency_score": 86,
+        "intelligibility_score": 84,
+        "feedback": "Muy buena pronunciacion. Las vocales son claras.",
+        "phoneme_errors": [],
+    }
+
+    from app.infrastructure.security.dependencies import get_current_user
+
+    async def override_get_current_user():
+        return fake_user
+
+    app.dependency_overrides[get_current_user] = override_get_current_user
+
+    with patch(
+        "app.use_cases.pronunciation.evaluate_phrase.evaluate_phrase",
+        new=AsyncMock(return_value=fake_gemini_response),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/pronunciation/evaluate",
+                data={
+                    "phrase_text": "La luna brilla sobre el mar.",
+                    "phrase_index": "0",
+                    "level": "basico",
+                },
+                files={"audio": ("recording.webm", b"fake_audio_bytes", "audio/webm")},
+            )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["overall_score"] == 85
+    assert data["vowel_score"] == 88
+    assert data["phoneme_errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_phrase_endpoint_returns_502_on_gemini_error():
+    from app.infrastructure.security.dependencies import get_current_user
+    from app.infrastructure.ai.pronunciation_gemini import GeminiPronunciationError
+
+    fake_user = _make_fake_user()
+
+    async def override_get_current_user():
+        return fake_user
+
+    app.dependency_overrides[get_current_user] = override_get_current_user
+
+    with patch(
+        "app.use_cases.pronunciation.evaluate_phrase.evaluate_phrase",
+        new=AsyncMock(side_effect=GeminiPronunciationError("timeout")),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/pronunciation/evaluate",
+                data={
+                    "phrase_text": "La luna brilla.",
+                    "phrase_index": "0",
+                    "level": "basico",
+                },
+                files={"audio": ("recording.webm", b"fake_audio_bytes", "audio/webm")},
+            )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 502
