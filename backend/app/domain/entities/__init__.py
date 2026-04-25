@@ -6,6 +6,8 @@ from app.domain.entities.loudness_preset import LoudnessPreset
 from app.domain.entities.loudness_session import LoudnessSession
 from app.domain.entities.accentuation_session import AccentuationSession
 from app.domain.entities.phrase_evaluation import PhraseEvaluation
+from app.domain.entities.pronunciation_session import PronunciationSession
+from app.domain.entities.phrase_pronunciation import PhrasePronunciation
 
 __all__ = [
     "Role",
@@ -16,4 +18,6 @@ __all__ = [
     "LoudnessSession",
     "AccentuationSession",
     "PhraseEvaluation",
+    "PronunciationSession",
+    "PhrasePronunciation",
 ]
