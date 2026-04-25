@@ -8,6 +8,7 @@ from app.presentation.routers.accentuation import router as accentuation_router
 from app.presentation.routers.auth import router as auth_router
 from app.presentation.routers.loudness import router as loudness_router
 from app.presentation.routers.phonation import router as phonation_router
+from app.presentation.routers.pronunciation import router as pronunciation_router
 from config import settings
 
 
@@ -34,6 +35,7 @@ app.include_router(auth_router)
 app.include_router(phonation_router)
 app.include_router(loudness_router)
 app.include_router(accentuation_router)
+app.include_router(pronunciation_router)
 
 
 @app.get("/health")
