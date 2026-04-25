@@ -21,6 +21,8 @@ from app.use_cases.pronunciation.sessions import (
 
 router = APIRouter(prefix="/pronunciation", tags=["pronunciation"])
 
+ALLOWED_AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"}
+
 
 @router.post("/evaluate", response_model=PhrasePronunciationResponse)
 async def evaluate_phrase_endpoint(
@@ -31,7 +33,7 @@ async def evaluate_phrase_endpoint(
     user: User = Depends(get_current_user),
 ):
     audio_bytes = await audio.read()
-    mime_type = audio.content_type or "audio/webm"
+    mime_type = audio.content_type if audio.content_type in ALLOWED_AUDIO_MIME_TYPES else "audio/webm"
 
     try:
         evaluation = await evaluate_phrase_module.evaluate_phrase(audio_bytes, mime_type, phrase_text, level)
@@ -67,6 +69,8 @@ async def create_session(
     )
 
     result = await get_pronunciation_session(str(pronunciation_session.id), user, session)
+    if not result:
+        raise HTTPException(status_code=500, detail="Error al recuperar la sesion creada")
 
     return PronunciationSessionResponse(
         id=str(result.id),
