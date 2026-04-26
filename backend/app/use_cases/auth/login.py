@@ -19,8 +19,11 @@ async def login_user(email: str, password: str, session: AsyncSession) -> dict |
     access_token = create_access_token(subject=str(user.id))
 
     return {
-        "id": str(user.id),
-        "email": user.email,
-        "full_name": user.full_name,
         "access_token": access_token,
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "full_name": user.full_name,
+            "is_active": user.is_active,
+        },
     }
