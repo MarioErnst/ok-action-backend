@@ -10,7 +10,21 @@ Tu tarea es evaluar la acentuacion de un hablante que lee en voz alta la siguien
 
 FRASE: "{phrase_text}"
 
-Analiza el audio proporcionado y evalua los siguientes aspectos:
+PASO 1 — VERIFICACION OBLIGATORIA ANTES DE EVALUAR:
+Antes de asignar cualquier puntaje, determina si el audio es evaluable:
+
+A) SILENCIO O AUDIO VACIO: Si el audio no contiene voz humana, solo ruido de fondo o silencio, \
+todos los puntajes deben ser 0 y el feedback debe indicar "No se detectó habla en el audio. \
+Por favor graba tu voz leyendo la frase en voz alta."
+
+B) CONTENIDO INCORRECTO: Si el hablante dice algo que no corresponde a la frase indicada \
+(palabras al azar, otro idioma, sonidos sin sentido), todos los puntajes deben ser entre 0 y 15 \
+y el feedback debe indicar que el contenido no coincide con la frase evaluada.
+
+C) FRASE INCOMPLETA: Si el hablante dice solo parte de la frase, los puntajes deben reflejar \
+esa incompletitud (maximo 40) y el feedback debe señalarlo.
+
+Solo si el audio contiene un intento claro de leer la frase indicada, procede con la evaluacion completa:
 
 1. ACENTO PROSODICO: Verifica que el hablante coloque correctamente el acento tonico en cada palabra. \
 Identifica palabras agudas, graves, esdrujulas y sobreesdrujulas y si el patron acentual fue respetado.
@@ -44,9 +58,7 @@ Devuelve un JSON con la siguiente estructura exacta:
   ]
 }}
 
-Si no detectas errores significativos, devuelve una lista vacia en specific_errors y un feedback positivo.
-Las puntuaciones deben ser justas y constructivas. Un hablante nativo promedio sin formacion fonetica \
-deberia obtener entre 70-85. Solo devuelve el JSON, sin texto adicional."""
+Las puntuaciones deben ser estrictas y honestas. Solo devuelve el JSON, sin texto adicional."""
 
 GEMINI_RESPONSE_SCHEMA = {
     "type": "object",
