@@ -34,3 +34,4 @@ class User(Base):
     pronunciation_sessions: Mapped[list["PronunciationSession"]] = relationship(back_populates="user")
     muletillas_sessions: Mapped[list["MuletillasSession"]] = relationship(back_populates="user")
     live_sessions: Mapped[list["LiveSession"]] = relationship(back_populates="user")
+    pause_sessions: Mapped[list["PauseSession"]] = relationship(back_populates="user")

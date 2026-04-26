@@ -13,6 +13,7 @@ from app.domain.entities.live_session import LiveSession
 from app.domain.entities.precision_question import PrecisionQuestion
 from app.domain.entities.precision_session import PrecisionSession
 from app.domain.entities.precision_round import PrecisionRound
+from app.domain.entities.pause_session import PauseSession
 
 __all__ = [
     "Role",
@@ -31,4 +32,5 @@ __all__ = [
     "PrecisionQuestion",
     "PrecisionSession",
     "PrecisionRound",
+    "PauseSession",
 ]
