@@ -1,6 +1,9 @@
+import logging
+
 from app.infrastructure.ai.gemini import GeminiAccentuationService
-from app.infrastructure.ai.speech_validator import GeminiSpeechValidator
 from app.infrastructure.audio.silence_detector import is_silent
+
+logger = logging.getLogger(__name__)
 
 _SILENCE_RESPONSE = {
     "overall_score": 0,
@@ -12,33 +15,17 @@ _SILENCE_RESPONSE = {
     "specific_errors": [],
 }
 
-_MISMATCH_RESPONSE = {
-    "overall_score": 10,
-    "pronunciation_score": 10,
-    "rhythm_score": 10,
-    "intonation_score": 5,
-    "stress_accuracy_score": 5,
-    "feedback": "El audio no corresponde a la frase indicada. Asegúrate de leer exactamente la frase mostrada en pantalla.",
-    "specific_errors": [],
-}
-
 
 async def evaluate_phrase(
     audio_bytes: bytes,
     mime_type: str,
     phrase_text: str,
 ) -> dict:
-    if await is_silent(audio_bytes, mime_type):
-        return _SILENCE_RESPONSE
-
-    validator = GeminiSpeechValidator()
-    validation = await validator.validate(audio_bytes, mime_type, phrase_text)
-
-    if not validation.get("has_speech"):
-        return _SILENCE_RESPONSE
-
-    if not validation.get("matches_phrase"):
-        return _MISMATCH_RESPONSE
+    try:
+        if await is_silent(audio_bytes, mime_type):
+            return _SILENCE_RESPONSE
+    except Exception as exc:
+        logger.warning("Silence detection failed, proceeding to Gemini: %s", exc)
 
     service = GeminiAccentuationService()
     return await service.evaluate_phrase(audio_bytes, mime_type, phrase_text)
