@@ -6,8 +6,13 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class LoginResponse(BaseModel):
+class UserDto(BaseModel):
     id: str
     email: str
     full_name: str
+    is_active: bool
+
+
+class LoginResponse(BaseModel):
     access_token: str
+    user: UserDto
