@@ -1,3 +1,4 @@
+# Documentacion detallada de este modulo: documentacion/modulos/pronunciacion.md
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
