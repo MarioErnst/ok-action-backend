@@ -1,3 +1,4 @@
+# Servicio de IA para acentuacion. Ver integracion completa: documentacion/modulos/acentuacion.md
 import json
 
 from google import genai
