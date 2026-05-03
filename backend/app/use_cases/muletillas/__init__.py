@@ -1,1 +1,1 @@
-# Paquete de casos de uso del modulo muletillas
+# Use cases package for the muletillas module
