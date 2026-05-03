@@ -1,3 +1,4 @@
+# Logica de negocio del modulo de acentuacion: documentacion/modulos/acentuacion.md
 import logging
 
 from app.infrastructure.ai.gemini import GeminiAccentuationService
