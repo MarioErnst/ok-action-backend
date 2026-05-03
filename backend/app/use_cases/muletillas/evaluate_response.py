@@ -1,3 +1,4 @@
+# Logica de negocio del modulo de muletillas: documentacion/modulos/muletillas.md
 import logging
 import random
 
