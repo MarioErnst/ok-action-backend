@@ -1,3 +1,4 @@
+# Logica de negocio del modulo de fonacion: documentacion/modulos/fonacion.md
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
