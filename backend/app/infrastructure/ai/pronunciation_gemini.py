@@ -1,4 +1,4 @@
-# Servicio de IA para pronunciacion. Ver integracion completa: documentacion/modulos/pronunciacion.md
+# AI service for pronunciation. Full integration docs: documentacion/modulos/pronunciacion.md
 import json
 
 from google import genai
