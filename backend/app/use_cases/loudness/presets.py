@@ -1,4 +1,4 @@
-# Logica de negocio del modulo de volumen: documentacion/modulos/volumen.md
+# Business logic for the loudness module: documentacion/modulos/volumen.md
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
