@@ -1,3 +1,4 @@
+# Business logic for the pronunciation module: documentacion/modulos/pronunciacion.md
 import logging
 
 from app.infrastructure.ai.pronunciation_gemini import GeminiPronunciationService

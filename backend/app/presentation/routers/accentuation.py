@@ -1,3 +1,4 @@
+# Full module documentation: documentacion/modulos/acentuacion.md
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 

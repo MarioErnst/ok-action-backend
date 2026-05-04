@@ -1,3 +1,4 @@
+# AI service for pronunciation. Full integration docs: documentacion/modulos/pronunciacion.md
 import json
 
 from google import genai

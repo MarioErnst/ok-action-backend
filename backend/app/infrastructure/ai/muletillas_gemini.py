@@ -1,3 +1,4 @@
+# AI service for muletillas. Full integration docs: documentacion/modulos/muletillas.md
 import json
 
 from google import genai
