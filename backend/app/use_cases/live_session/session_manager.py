@@ -16,7 +16,7 @@ class LiveSessionState:
     accumulated_errors: int = 0
     analyses: list[dict] = field(default_factory=list)
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    stop_reason: str = ""
+    stop_reason: str | None = None
 
     # ClassVar prevents these from becoming dataclass fields (no accidental override at construction)
     MAX_DURATION_SEC: ClassVar[int] = 300
