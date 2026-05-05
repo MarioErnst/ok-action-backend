@@ -105,7 +105,7 @@ async def create_session(
     )
 
 
-@router.get("/sessions", response_model=list[MuletillasSessionResponse])
+@router.get("/sessions", response_model=list[MuletillasSessionListItem])
 async def list_sessions(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
