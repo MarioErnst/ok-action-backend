@@ -1,0 +1,10 @@
+.gcloudignore
+.git
+.gitignore
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.env
+backend/.env.*
+*.pyc
+*.pyo
