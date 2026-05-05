@@ -17,10 +17,10 @@ def test_prompt_includes_all_dims_when_all_selected():
     assert "muletillas" in prompt.lower()
 
 
-def test_prompt_includes_eval_format_instruction():
+def test_prompt_includes_analysis_rules():
     prompt = build_system_prompt(["pron"])
-    assert "[EVAL]" in prompt
-    assert "[/EVAL]" in prompt
+    assert "silencio" in prompt.lower()
+    assert "fb" in prompt
 
 
 def test_prompt_excludes_acc_key_when_not_selected():
