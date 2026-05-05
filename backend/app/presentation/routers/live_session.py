@@ -62,7 +62,11 @@ async def live_session_ws(
 
     try:
         start_msg = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
-    except (asyncio.TimeoutError, Exception):
+    except asyncio.TimeoutError:
+        await ws.close(code=4002, reason="Expected start message")
+        return
+    except Exception as exc:
+        logger.warning("Unexpected error waiting for start message: %s", exc)
         await ws.close(code=4002, reason="Expected start message")
         return
 
@@ -110,8 +114,13 @@ async def live_session_ws(
                     await asyncio.sleep(ANALYSIS_INTERVAL_SECONDS)
                     if stop_event.is_set():
                         break
-                    await gemini.trigger_analysis()
-                    analysis = await gemini.receive_analysis()
+                    try:
+                        await gemini.trigger_analysis()
+                        analysis = await gemini.receive_analysis()
+                    except Exception as exc:
+                        logger.error("Analysis cycle failed: %s", exc)
+                        stop_event.set()
+                        break
                     if analysis is None:
                         continue
 
