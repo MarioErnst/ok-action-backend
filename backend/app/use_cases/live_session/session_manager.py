@@ -10,7 +10,6 @@ class LiveSessionState:
     Accumulates analysis cycles and evaluates stop conditions.
     """
 
-    session_id: str
     user_id: str
     selected_dims: list[str]
     accumulated_errors: int = 0

@@ -76,7 +76,6 @@ async def live_session_ws(
         return
 
     state = LiveSessionState(
-        session_id=str(user.id),
         user_id=str(user.id),
         selected_dims=dims,
     )
