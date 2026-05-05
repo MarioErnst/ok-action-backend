@@ -1,8 +1,10 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class LiveSessionResponse(BaseModel):
     """Full response shape for a saved live session record."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: str
     selected_dims: list[str]
@@ -15,6 +17,8 @@ class LiveSessionResponse(BaseModel):
 
 class LiveSessionListItem(BaseModel):
     """Abbreviated shape used in list endpoints."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: str
     selected_dims: list[str]
