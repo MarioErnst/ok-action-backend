@@ -4,14 +4,12 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities.user import User
 from app.infrastructure.ai.live_gemini import analyze_audio_segment
 from app.infrastructure.db.session import get_session
-from app.infrastructure.security.dependencies import get_current_user
-from app.infrastructure.security.jwt import decode_access_token
+from app.infrastructure.security.dependencies import authenticate_ws, get_current_user
 from app.presentation.schemas.live_session import LiveSessionListItem
 from app.use_cases.live_session.errors import extract_errors_for_dim
 from app.use_cases.live_session.prompt_builder import build_system_prompt
@@ -25,25 +23,6 @@ router = APIRouter(prefix="/live", tags=["live-session"])
 ANALYSIS_INTERVAL_SECONDS = 5
 
 
-async def _authenticate_ws(token: str, db: AsyncSession) -> User | None:
-    """Validates JWT from query param and returns the active user, or None on failure."""
-    payload = decode_access_token(token)
-    if not payload:
-        return None
-    user_id = payload.get("sub")
-    if not user_id:
-        return None
-    try:
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-    except Exception as exc:
-        logger.error("DB error during WS auth: %s", exc)
-        return None
-    if not user or not user.is_active:
-        return None
-    return user
-
-
 @router.websocket("/session")
 async def live_session_ws(
     ws: WebSocket,
@@ -53,7 +32,7 @@ async def live_session_ws(
     await ws.accept()
 
     try:
-        user = await _authenticate_ws(token, db)
+        user = await authenticate_ws(token, db)
     except Exception as exc:
         logger.error("WS auth error: %s", exc)
         await ws.close(code=4001, reason="Unauthorized")
