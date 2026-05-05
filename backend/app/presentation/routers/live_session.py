@@ -13,6 +13,7 @@ from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.infrastructure.security.jwt import decode_access_token
 from app.presentation.schemas.live_session import LiveSessionListItem
+from app.use_cases.live_session.errors import extract_errors_for_dim
 from app.use_cases.live_session.prompt_builder import build_system_prompt
 from app.use_cases.live_session.save_session import list_live_sessions, save_live_session
 from app.use_cases.live_session.session_manager import LiveSessionState
@@ -41,14 +42,6 @@ async def _authenticate_ws(token: str, db: AsyncSession) -> User | None:
     if not user or not user.is_active:
         return None
     return user
-
-
-def _extract_errors_for_dim(analysis: dict, dim: str | None) -> list:
-    """Extracts the error list from a single dimension's analysis result."""
-    if not dim:
-        return []
-    dim_data = analysis.get("dims", {}).get(dim, {})
-    return dim_data.get("err") or dim_data.get("det") or []
 
 
 @router.websocket("/session")
@@ -139,7 +132,7 @@ async def live_session_ws(
                     "type": "correction",
                     "dim": dim,
                     "reason": reason,
-                    "errors": _extract_errors_for_dim(analysis, dim),
+                    "errors": extract_errors_for_dim(analysis, dim),
                 })
                 stop_event.set()
 
