@@ -34,8 +34,10 @@ _MUL_DET_SCHEMA = {
     "properties": {
         "w": {"type": "string"},
         "n": {"type": "integer"},
+        # Short transcript excerpt (up to ~10 words) showing where the filler appeared
+        "ctx": {"type": "string"},
     },
-    "required": ["w", "n"],
+    "required": ["w", "n", "ctx"],
 }
 
 _DIM_SCHEMAS: dict[str, dict] = {
