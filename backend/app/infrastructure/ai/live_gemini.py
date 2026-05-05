@@ -54,7 +54,6 @@ class GeminiLiveService:
             response_modalities=[types.Modality.TEXT],
             system_instruction=types.Content(
                 parts=[types.Part(text=self._system_prompt)],
-                role="user",
             ),
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
@@ -62,16 +61,21 @@ class GeminiLiveService:
                 )
             ),
         )
-        self._context = self._client.aio.live.connect(
-            model="gemini-2.5-flash",
-            config=config,
-        )
-        self._session = await self._context.__aenter__()
+        try:
+            self._context = self._client.aio.live.connect(
+                model="gemini-2.5-flash",
+                config=config,
+            )
+            self._session = await self._context.__aenter__()
+        except Exception as exc:
+            raise GeminiLiveError(f"Failed to open Gemini Live session: {exc}") from exc
         return self
 
     async def __aexit__(self, *args) -> None:
         if self._context:
             await self._context.__aexit__(*args)
+        self._session = None
+        self._context = None
 
     async def send_audio_chunk(self, pcm_bytes: bytes) -> None:
         """Forwards a raw PCM 16-bit 16kHz chunk to Gemini."""
