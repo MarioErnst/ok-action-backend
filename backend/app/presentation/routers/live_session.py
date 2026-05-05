@@ -32,8 +32,12 @@ async def _authenticate_ws(token: str, db: AsyncSession) -> User | None:
     user_id = payload.get("sub")
     if not user_id:
         return None
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    try:
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.error("DB error during WS auth: %s", exc)
+        return None
     if not user or not user.is_active:
         return None
     return user
@@ -55,7 +59,12 @@ async def live_session_ws(
 ):
     await ws.accept()
 
-    user = await _authenticate_ws(token, db)
+    try:
+        user = await _authenticate_ws(token, db)
+    except Exception as exc:
+        logger.error("WS auth error: %s", exc)
+        await ws.close(code=4001, reason="Unauthorized")
+        return
     if not user:
         await ws.close(code=4001, reason="Unauthorized")
         return
