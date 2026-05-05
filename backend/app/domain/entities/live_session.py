@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -15,9 +16,9 @@ class LiveSession(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    selected_dims: Mapped[list] = mapped_column(JSONB, nullable=False)
-    analyses: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    overall_score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=True)
+    selected_dims: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
+    analyses: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    overall_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     total_errors: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     stop_reason: Mapped[str] = mapped_column(String(20), nullable=False)
