@@ -12,7 +12,7 @@ from app.infrastructure.ai.live_gemini import GeminiLiveService, GeminiLiveError
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.infrastructure.security.jwt import decode_access_token
-from app.presentation.schemas.live_session import LiveSessionListItem, LiveSessionResponse
+from app.presentation.schemas.live_session import LiveSessionListItem
 from app.use_cases.live_session.prompt_builder import build_system_prompt
 from app.use_cases.live_session.save_session import list_live_sessions, save_live_session
 from app.use_cases.live_session.session_manager import LiveSessionState
