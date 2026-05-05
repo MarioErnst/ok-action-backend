@@ -63,7 +63,7 @@ class GeminiLiveService:
         )
         try:
             self._context = self._client.aio.live.connect(
-                model="gemini-2.5-flash",
+                model="gemini-3.1-flash-live-preview",
                 config=config,
             )
             self._session = await self._context.__aenter__()
