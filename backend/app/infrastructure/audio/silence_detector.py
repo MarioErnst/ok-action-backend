@@ -70,3 +70,74 @@ def _mime_to_extension(mime_type: str) -> str:
         "video/webm": ".webm",
     }
     return mapping.get(base_type, ".webm")
+
+
+# dB above ambient floor required to classify audio as non-silence.
+# 12 dB corresponds to a linear factor of ~3.98, which gives enough headroom
+# over typical background noise without being so strict that real speech is missed.
+SILENCE_MARGIN_DB = 12.0
+
+
+class SilenceDetector:
+    """
+    Adaptive VAD for Live Session Q&A mode.
+    Calibrates against ambient noise at session start so that background noise
+    does not prevent silence detection.
+    """
+
+    def __init__(self) -> None:
+        # Conservative default so an uncalibrated detector treats most audio as silence
+        # rather than triggering false positives on noise.
+        self._ambient_floor_rms: float = 300.0
+
+    def calibrate(self, audio_chunk: bytes) -> None:
+        """
+        Update the ambient noise floor using a representative audio chunk.
+
+        Args:
+            audio_chunk: Raw 16-bit signed PCM bytes captured during a quiet moment.
+        """
+        samples = self._parse_pcm(audio_chunk)
+        if not samples:
+            return
+        rms = math.sqrt(sum(s * s for s in samples) / len(samples))
+        self._ambient_floor_rms = rms
+
+    def is_silence(self, audio_chunk: bytes) -> bool:
+        """
+        Return True when the chunk's RMS is below the adaptive silence threshold.
+
+        Args:
+            audio_chunk: Raw 16-bit signed PCM bytes to evaluate.
+
+        Returns:
+            True if the audio is considered silence, False otherwise.
+        """
+        samples = self._parse_pcm(audio_chunk)
+        if not samples:
+            return True
+        rms = math.sqrt(sum(s * s for s in samples) / len(samples))
+        # Convert dB margin to a linear multiplier: 10^(dB/20)
+        threshold = self._ambient_floor_rms * (10 ** (SILENCE_MARGIN_DB / 20))
+        return rms < threshold
+
+    @property
+    def ambient_floor_rms(self) -> float:
+        """Current ambient noise floor in RMS units."""
+        return self._ambient_floor_rms
+
+    @staticmethod
+    def _parse_pcm(audio_chunk: bytes) -> list[int]:
+        """
+        Decode raw bytes as 16-bit signed PCM samples (little-endian).
+
+        Args:
+            audio_chunk: Raw PCM bytes.
+
+        Returns:
+            List of integer sample values, or empty list for invalid input.
+        """
+        if not audio_chunk or len(audio_chunk) < 2:
+            return []
+        n = len(audio_chunk) // 2
+        return list(struct.unpack(f"{n}h", audio_chunk[: n * 2]))
