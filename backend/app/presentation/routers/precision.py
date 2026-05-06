@@ -4,6 +4,7 @@ import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.entities.precision_question import PrecisionQuestion as PrecisionQuestionEntity
 from app.domain.entities.user import User
 from app.infrastructure.ai.precision_gemini import PrecisionGeminiError
 from app.infrastructure.db.session import get_session
@@ -17,26 +18,26 @@ from app.presentation.schemas.precision import (
     PrecisionSessionResponse,
     StartSessionResponse,
 )
-from app.use_cases.precision.start_precision_session import start_precision_session
+from app.use_cases.precision.abandon_precision_session import abandon_precision_session
 from app.use_cases.precision.evaluate_precision_response import evaluate_precision_response
 from app.use_cases.precision.finalize_precision_session import finalize_precision_session
-from app.use_cases.precision.abandon_precision_session import abandon_precision_session
-from app.use_cases.precision.get_precision_session import get_precision_session
 from app.use_cases.precision.get_precision_history import get_precision_history
+from app.use_cases.precision.get_precision_session import get_precision_session
+from app.use_cases.precision.start_precision_session import start_precision_session
 
 router = APIRouter(prefix="/precision", tags=["precision"])
 
 
-@router.post("/sessions", response_model=StartSessionResponse)
+@router.post("/sessions", response_model=StartSessionResponse, status_code=201)
 async def start_session(
     total_rounds: int = 5,
     db: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    async with db.begin():
-        session, questions = await start_precision_session(
-            db, user_id=user.id, total_rounds=total_rounds
-        )
+    session, questions = await start_precision_session(
+        db, user_id=user.id, total_rounds=total_rounds
+    )
+    await db.commit()
     return StartSessionResponse(
         session_id=str(session.id),
         questions=[
@@ -58,34 +59,33 @@ async def evaluate_round(
     audio: UploadFile = File(...),
     question_id: str = Form(...),
     noise_level: str = Form(default="low"),
+    audio_duration_secs: float | None = Form(default=None),
     db: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
     audio_bytes = await audio.read()
     mime_type = audio.content_type or "audio/webm"
 
-    # Fetch question text snapshot outside the evaluation transaction so a
-    # missing question always returns 404, never 502.
-    from app.domain.entities.precision_question import PrecisionQuestion as PQEntity
-    async with db.begin():
-        q_result = await db.get(PQEntity, uuid.UUID(question_id))
+    # Fetch question text snapshot so a missing question always returns 404, never 502.
+    q_result = await db.get(PrecisionQuestionEntity, uuid.UUID(question_id))
     if not q_result:
         raise HTTPException(status_code=404, detail="Question not found")
 
     try:
-        async with db.begin():
-            precision_round = await evaluate_precision_response(
-                db=db,
-                session_id=session_id,
-                question_id=uuid.UUID(question_id),
-                question_text=q_result.text,
-                audio_bytes=audio_bytes,
-                mime_type=mime_type,
-                noise_level=noise_level,
-            )
+        precision_round = await evaluate_precision_response(
+            db=db,
+            session_id=session_id,
+            question_id=uuid.UUID(question_id),
+            question_text=q_result.text,
+            audio_bytes=audio_bytes,
+            mime_type=mime_type,
+            noise_level=noise_level,
+            audio_duration_secs=audio_duration_secs,
+        )
     except PrecisionGeminiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
+    await db.commit()
     return EvaluateRoundResponse(
         round_id=str(precision_round.id),
         audio_intelligible=precision_round.audio_intelligible,
@@ -105,8 +105,8 @@ async def finalize_session(
     db: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    async with db.begin():
-        session = await finalize_precision_session(db, session_id)
+    session = await finalize_precision_session(db, session_id)
+    await db.commit()
     return FinalizeSessionResponse(
         session_id=str(session.id),
         overall_score=float(session.overall_score) if session.overall_score is not None else None,
@@ -121,8 +121,8 @@ async def abandon_session(
     db: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ):
-    async with db.begin():
-        await abandon_precision_session(db, session_id)
+    await abandon_precision_session(db, session_id)
+    await db.commit()
 
 
 @router.get("/sessions/{session_id}", response_model=PrecisionSessionResponse)
