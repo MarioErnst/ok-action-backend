@@ -237,3 +237,75 @@ Aunque `question_id` referencia la pregunta original en `precision_questions`, s
 ### Estrategia para no repetir preguntas recientes
 
 Al iniciar una sesión, el caso de uso consulta los `question_id` usados en las últimas N sesiones del usuario (donde N es configurable) y los excluye de la selección aleatoria. Si el banco tiene pocas preguntas y todas han sido usadas recientemente, el sistema selecciona igualmente de forma aleatoria sin restricción para evitar bloquear al usuario. Esta lógica vive en el caso de uso, no en la base de datos, para mantener la flexibilidad de ajustar N sin migraciones.
+
+## 8. Integración con Sesión Libre (Live Session)
+
+Cuando el usuario selecciona la dimensión `"precision"` en una sesión libre, el módulo de precisión se integra directamente con el WebSocket de la sesión libre. Este modo se denomina "modo Q&A" y opera de forma paralela al análisis continuo de las otras dimensiones.
+
+### Arquitectura del modo Q&A
+
+**Archivo:** `backend/app/presentation/routers/live_session.py`
+
+El router WebSocket ejecuta cuatro corrutinas en paralelo mediante `asyncio.gather`:
+- `stream_audio`: lee chunks binarios PCM y los distribuye al buffer principal y al buffer Q&A.
+- `analysis_timer`: analiza continuamente las dimensiones estándar (`pron`, `acc`, `mul`) cada 5 segundos. Se salta si no hay dimensiones estándar seleccionadas.
+- `session_limit_timer`: limita la duración total de la sesión.
+- `qa_mode`: maneja el ciclo de preguntas y respuestas de precisión (solo si `"precision"` está en los dims seleccionados).
+
+### Flujo del ciclo Q&A
+
+1. `qa_mode` llama a `start_precision_session(db, user_id, total_rounds=5, mode="live_session")`.
+2. Envía al frontend: `{"type": "question", "text": "...", "number": 1, "total": 5}`.
+3. Acumula los chunks PCM en `qa_buffer` (separado del `audio_buffer` de análisis continuo).
+4. **Calibración VAD**: los primeros 16000 bytes (~500ms a 16kHz 16-bit mono) se usan para calibrar el `SilenceDetector`. Esto establece el piso de ruido ambiental.
+5. **Detección de fin de respuesta**: se activa por dos vías:
+   - Silencio adaptativo: si `SilenceDetector.is_silence()` devuelve `True` durante 64000 bytes consecutivos (~2s), se considera que el usuario terminó de responder.
+   - Mensaje del frontend: `{"type": "answer_done"}` termina la respuesta inmediatamente.
+6. El audio acumulado se envía a Gemini via `analyze_audio_segment(audio_bytes, ["precision"], prompt)`.
+7. El resultado se persiste en `precision_rounds` y se actualiza `completed_rounds` en `precision_sessions`.
+8. Se envía al frontend: `{"type": "round_result", "number": N, "precision": {...}}` o `{"type": "round_unintelligible", "number": N}`.
+9. Se repite para cada pregunta. Al completar todas: `{"type": "session_complete"}`.
+
+### SilenceDetector (VAD adaptativo)
+
+**Archivo:** `backend/app/infrastructure/audio/silence_detector.py`
+
+`SilenceDetector` implementa detección de actividad de voz (VAD) adaptativa:
+- `calibrate(audio_chunk)`: establece el piso de ruido ambiental calculando el RMS de un chunk representativo del silencio del entorno.
+- `is_silence(audio_chunk)`: compara el RMS del chunk contra el umbral dinámico = `floor * 10^(12/20)` ≈ `floor * 3.98`. Los 12 dB de margen evitan falsos positivos por ruido de fondo sin ser tan estrictos que bloqueen el fin de respuesta.
+- Por defecto, antes de calibrar, el piso es 300 (conservador): la mayoría de audio real supera ese umbral, por lo que no se detecta silencio prematuramente.
+
+### Manejo de desconexión
+
+En el bloque `finally` de `qa_mode`, se llama a `abandon_precision_session(db, qa_session_id)`. Esta función solo abandona la sesión si su `status` es `"active"`. Si la sesión ya fue completada, la llamada no tiene efecto. Esto garantiza limpieza correcta tanto en desconexiones inesperadas como en flujos normales.
+
+### Mensajes WebSocket entre backend y frontend
+
+| Dirección | Tipo | Payload | Descripción |
+|---|---|---|---|
+| Backend → Frontend | `question` | `{text, number, total}` | Nueva pregunta para responder. |
+| Frontend → Backend | `answer_done` | — | El usuario indica que terminó de responder. |
+| Backend → Frontend | `round_result` | `{number, precision: {relevance, directness, conciseness, overall, feedback, audio_intelligible}}` | Resultado de la evaluación. |
+| Backend → Frontend | `round_unintelligible` | `{number}` | El audio no pudo evaluarse. |
+| Backend → Frontend | `session_complete` | — | Todas las preguntas respondidas. |
+| Backend → Frontend | `session_ended` | `{reason}` | WebSocket listo para cerrar (igual que en sesión estándar). |
+
+### Esquema de respuesta Gemini para precisión (modo live)
+
+La misma dimensión `"precision"` usa `_PRECISION_SCHEMA` en `live_gemini.py`. A diferencia de las otras dimensiones (`pron`, `acc`, `mul`) que se anidan bajo `"dims"`, `"precision"` se incluye como propiedad de primer nivel en la respuesta JSON. Esto evita mezclar su semántica (evaluación por pregunta) con el análisis continuo de habla.
+
+```json
+{
+  "dims": { ... },
+  "overall": 85,
+  "fb": "...",
+  "precision": {
+    "relevance": 80,
+    "directness": 75,
+    "conciseness": 90,
+    "overall": 82,
+    "feedback": "Respuesta directa.",
+    "audio_intelligible": true
+  }
+}
+```
