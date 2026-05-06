@@ -25,12 +25,13 @@ QUESTIONS = [
     {"text": "Describe en pocas palabras cuál es tu propuesta de valor como profesional.", "category": "profesional", "difficulty_level": "advanced"},
     {"text": "¿Cuál es la lección más importante que has aprendido de un fracaso reciente?", "category": "reflexión", "difficulty_level": "advanced"},
     {"text": "Explica en qué área necesitas mejorar más y qué pasos concretos tomarías.", "category": "metas", "difficulty_level": "advanced"},
-    {"text": "¿Qué impacto tiene tu trabajo en las personas que te rodean?", "category": "profesional", "difficulty_level": "advanced"},
+    {"text": "¿Qué impacto tiene tu trabajo en las personas que te rodean?", "category": "metas", "difficulty_level": "advanced"},
     {"text": "Describe cuál es tu visión a largo plazo en una sola idea central.", "category": "metas", "difficulty_level": "advanced"},
 ]
 
 
 async def seed() -> None:
+    # Deferred to avoid resolving the ORM mapper before the async engine is initialized.
     from app.domain.entities.precision_question import PrecisionQuestion
 
     async with async_session_factory() as session:
