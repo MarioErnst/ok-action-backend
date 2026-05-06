@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -29,24 +28,11 @@ class PrecisionSession(Base):
         back_populates="session", cascade="all, delete-orphan"
     )
 
-    def __init__(
-        self,
-        total_rounds: int = 0,
-        user_id: Optional[uuid.UUID] = None,
-        mode: str = "standalone",
-        completed_rounds: int = 0,
-        overall_score: Optional[float] = None,
-        status: str = "active",
-        id: Optional[uuid.UUID] = None,
-        created_at: Optional[datetime] = None,
-        completed_at: Optional[datetime] = None,
-    ):
-        self.id = id if id is not None else uuid.uuid4()
-        self.user_id = user_id
-        self.mode = mode
-        self.total_rounds = total_rounds
-        self.completed_rounds = completed_rounds
-        self.overall_score = overall_score
-        self.status = status
-        self.created_at = created_at if created_at is not None else datetime.now(timezone.utc)
-        self.completed_at = completed_at
+    def __init__(self, **kwargs):
+        # Apply Python-level defaults so they are available before flush/commit.
+        kwargs.setdefault('id', uuid.uuid4())
+        kwargs.setdefault('mode', 'standalone')
+        kwargs.setdefault('completed_rounds', 0)
+        kwargs.setdefault('status', 'active')
+        kwargs.setdefault('created_at', datetime.now(timezone.utc))
+        super().__init__(**kwargs)

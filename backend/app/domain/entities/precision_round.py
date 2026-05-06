@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -37,38 +36,10 @@ class PrecisionRound(Base):
 
     session: Mapped["PrecisionSession"] = relationship(back_populates="rounds")
 
-    def __init__(
-        self,
-        session_id: Optional[uuid.UUID] = None,
-        question_id: Optional[uuid.UUID] = None,
-        question_text: Optional[str] = None,
-        audio_duration_secs: Optional[float] = None,
-        transcript: Optional[str] = None,
-        relevance_score: Optional[int] = None,
-        directness_score: Optional[int] = None,
-        conciseness_score: Optional[int] = None,
-        overall_score: Optional[int] = None,
-        feedback: Optional[str] = None,
-        strengths: Optional[list] = None,
-        improvement_areas: Optional[list] = None,
-        noise_level: str = "low",
-        audio_intelligible: bool = False,
-        id: Optional[uuid.UUID] = None,
-        created_at: Optional[datetime] = None,
-    ):
-        self.id = id if id is not None else uuid.uuid4()
-        self.session_id = session_id
-        self.question_id = question_id
-        self.question_text = question_text
-        self.audio_duration_secs = audio_duration_secs
-        self.transcript = transcript
-        self.relevance_score = relevance_score
-        self.directness_score = directness_score
-        self.conciseness_score = conciseness_score
-        self.overall_score = overall_score
-        self.feedback = feedback
-        self.strengths = strengths
-        self.improvement_areas = improvement_areas
-        self.noise_level = noise_level
-        self.audio_intelligible = audio_intelligible
-        self.created_at = created_at if created_at is not None else datetime.now(timezone.utc)
+    def __init__(self, **kwargs):
+        # Apply Python-level defaults so they are available before flush/commit.
+        kwargs.setdefault('id', uuid.uuid4())
+        kwargs.setdefault('noise_level', 'low')
+        kwargs.setdefault('audio_intelligible', False)
+        kwargs.setdefault('created_at', datetime.now(timezone.utc))
+        super().__init__(**kwargs)
