@@ -53,6 +53,9 @@ async def live_session_ws(
         await ws.close(code=4001, reason="Unauthorized")
         return
 
+    # End the read transaction opened by authenticate_ws so qa_mode can commit independently.
+    await db.commit()
+
     try:
         start_msg = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
     except asyncio.TimeoutError:
@@ -154,11 +157,11 @@ async def live_session_ws(
         """
         qa_session_id: uuid.UUID | None = None
         try:
-            async with db.begin():
-                qa_session, questions = await start_precision_session(
-                    db, user.id, total_rounds=5, mode="live_session"
-                )
-                qa_session_id = qa_session.id
+            qa_session, questions = await start_precision_session(
+                db, user.id, total_rounds=5, mode="live_session"
+            )
+            qa_session_id = qa_session.id
+            await db.commit()
 
             silence_detector = SilenceDetector()
             calibration_done = False
@@ -217,25 +220,25 @@ async def live_session_ws(
                     precision_data = analysis.get("precision", {})
                     audio_intelligible = bool(precision_data.get("audio_intelligible", False))
 
-                async with db.begin():
-                    round_obj = PrecisionRound(
-                        session_id=qa_session_id,
-                        question_id=question.id,
-                        question_text=question.text,
-                        audio_duration_secs=round(audio_duration, 2),
-                        noise_level="low",
-                        audio_intelligible=audio_intelligible,
-                    )
-                    if audio_intelligible:
-                        round_obj.relevance_score = precision_data.get("relevance")
-                        round_obj.directness_score = precision_data.get("directness")
-                        round_obj.conciseness_score = precision_data.get("conciseness")
-                        round_obj.overall_score = precision_data.get("overall")
-                        round_obj.feedback = precision_data.get("feedback")
-                        session_ref = await db.get(PrecisionSession, qa_session_id)
-                        if session_ref:
-                            session_ref.completed_rounds += 1
-                    db.add(round_obj)
+                round_obj = PrecisionRound(
+                    session_id=qa_session_id,
+                    question_id=question.id,
+                    question_text=question.text,
+                    audio_duration_secs=round(audio_duration, 2),
+                    noise_level="low",
+                    audio_intelligible=audio_intelligible,
+                )
+                if audio_intelligible:
+                    round_obj.relevance_score = precision_data.get("relevance")
+                    round_obj.directness_score = precision_data.get("directness")
+                    round_obj.conciseness_score = precision_data.get("conciseness")
+                    round_obj.overall_score = precision_data.get("overall")
+                    round_obj.feedback = precision_data.get("feedback")
+                    session_ref = await db.get(PrecisionSession, qa_session_id)
+                    if session_ref:
+                        session_ref.completed_rounds += 1
+                db.add(round_obj)
+                await db.commit()
 
                 if audio_intelligible:
                     await ws.send_json({
@@ -247,11 +250,11 @@ async def live_session_ws(
                     await ws.send_json({"type": "round_unintelligible", "number": idx + 1})
 
             if not stop_event.is_set() and qa_session_id:
-                async with db.begin():
-                    session_ref = await db.get(PrecisionSession, qa_session_id)
-                    if session_ref:
-                        session_ref.status = "completed"
-                        session_ref.completed_at = datetime.now(timezone.utc)
+                session_ref = await db.get(PrecisionSession, qa_session_id)
+                if session_ref:
+                    session_ref.status = "completed"
+                    session_ref.completed_at = datetime.now(timezone.utc)
+                await db.commit()
                 await ws.send_json({"type": "session_complete"})
 
         except Exception as exc:
@@ -259,8 +262,8 @@ async def live_session_ws(
         finally:
             if qa_session_id:
                 try:
-                    async with db.begin():
-                        await abandon_precision_session(db, qa_session_id)
+                    await abandon_precision_session(db, qa_session_id)
+                    await db.commit()
                 except Exception:
                     pass
             stop_event.set()
