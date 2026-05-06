@@ -6,6 +6,19 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str
+
+
+class SocialLoginRequest(BaseModel):
+    email: str
+    full_name: str
+    provider: str
+    token: str
+
+
 class UserDto(BaseModel):
     id: str
     email: str
