@@ -279,15 +279,17 @@ async def live_session_ws(
     finally:
         if not state.stop_reason:
             state.stop_reason = "user_ended"
-        try:
-            await save_live_session(state, user, db)
-        except Exception as exc:
-            logger.error("Failed to save live session: %s", exc)
+        # Send session_ended before saving so the client transitions immediately.
+        # The DB operation outlives the WebSocket connection.
         try:
             await ws.send_json({"type": "session_ended", "reason": state.stop_reason})
             await ws.close()
         except Exception:
             pass
+        try:
+            await save_live_session(state, user, db)
+        except Exception as exc:
+            logger.error("Failed to save live session: %s", exc)
 
 
 @router.get("/sessions", response_model=list[LiveSessionListItem])
