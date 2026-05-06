@@ -26,8 +26,6 @@ from app.use_cases.precision.get_precision_history import get_precision_history
 
 router = APIRouter(prefix="/precision", tags=["precision"])
 
-ALLOWED_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"}
-
 
 @router.post("/sessions", response_model=StartSessionResponse)
 async def start_session(
@@ -64,15 +62,18 @@ async def evaluate_round(
     user: User = Depends(get_current_user),
 ):
     audio_bytes = await audio.read()
-    mime_type = audio.content_type if audio.content_type in ALLOWED_MIME_TYPES else "audio/webm"
+    mime_type = audio.content_type or "audio/webm"
+
+    # Fetch question text snapshot outside the evaluation transaction so a
+    # missing question always returns 404, never 502.
+    from app.domain.entities.precision_question import PrecisionQuestion as PQEntity
+    async with db.begin():
+        q_result = await db.get(PQEntity, uuid.UUID(question_id))
+    if not q_result:
+        raise HTTPException(status_code=404, detail="Question not found")
 
     try:
         async with db.begin():
-            from app.domain.entities.precision_question import PrecisionQuestion as PQEntity
-            q_result = await db.get(PQEntity, uuid.UUID(question_id))
-            if not q_result:
-                raise HTTPException(status_code=404, detail="Question not found")
-
             precision_round = await evaluate_precision_response(
                 db=db,
                 session_id=session_id,
