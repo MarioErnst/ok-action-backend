@@ -80,5 +80,5 @@ async def get_session_detail(
     """Return the full details of a single facial expression session including per-question scores."""
     facial_session = await get_facial_expression_session(session_id, user, session)
     if not facial_session:
-        raise HTTPException(status_code=404, detail="Sesion no encontrada")
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
     return _session_to_response(facial_session)
