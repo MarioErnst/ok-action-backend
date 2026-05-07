@@ -55,3 +55,39 @@ def test_calculate_session_scores_all_perfect():
     ]
     result = calculate_session_scores(baseline, questions)
     assert result["overall_score"] == 100
+
+
+def test_calculate_session_scores_no_questions_returns_none():
+    # Empty session must report None, not 0, so callers can distinguish
+    # "no data captured" from "user got the worst possible score".
+    result = calculate_session_scores(
+        {"pucker": 0.0, "brow_down": 0.0, "lips_down": 0.0}, []
+    )
+    assert result["overall_score"] is None
+    assert result["question_results"] == []
+
+
+def test_score_expression_handles_high_baseline():
+    # If baseline is high (user has resting brow tension), the deviation
+    # measurement still works correctly.
+    baseline = 0.5
+    frames = [{"bd": 0.55}] * 10  # deviation 0.05 — below 0.12 threshold
+    assert score_expression(frames, baseline, threshold=0.12, key="bd") == 100
+
+
+def test_score_expression_single_frame_above_threshold():
+    # One frame above threshold out of 1 = 0% score
+    frames = [{"pk": 0.9}]
+    assert score_expression(frames, baseline=0.05, threshold=0.15, key="pk") == 0
+
+
+def test_weighted_composite_within_bounds():
+    # Composite must always land in [0, 100] regardless of input.
+    baseline = {"pucker": 0.0, "brow_down": 0.0, "lips_down": 0.0}
+    questions = [
+        # All-bad frames produce per-expression score 0, weighted sum still 0
+        {"question_id": "all_bad", "frames": [{"pk": 1.0, "bd": 1.0, "ld": 1.0}] * 5},
+    ]
+    result = calculate_session_scores(baseline, questions)
+    assert 0 <= result["question_results"][0]["question_score"] <= 100
+    assert result["question_results"][0]["question_score"] == 0
