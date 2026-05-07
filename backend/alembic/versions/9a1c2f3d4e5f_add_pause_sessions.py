@@ -1,7 +1,7 @@
 """add_pause_sessions
 
 Revision ID: 9a1c2f3d4e5f
-Revises: 428244644432
+Revises: 177abcd602b1
 Create Date: 2026-04-26 20:00:00.000000
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '9a1c2f3d4e5f'
-down_revision: Union[str, None] = '428244644432'
+down_revision: Union[str, None] = '177abcd602b1'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
