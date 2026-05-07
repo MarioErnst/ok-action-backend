@@ -1,187 +1,160 @@
-# Módulo: Expresión Facial
+# Módulo: Expresión Facial (live emotion tracking)
 
 ## Qué hace
 
-El módulo de expresión facial analiza el lenguaje no verbal del usuario durante una sesión de entrenamiento. El frontend captura frames de blendshapes faciales en tiempo real usando MediaPipe, y el backend recibe los datos crudos, calcula los puntajes por expresión y por pregunta, y persiste el resultado en la base de datos.
-
-El módulo evalúa tres expresiones faciales relacionadas con nerviosismo o desconfianza:
-
-- **Pucker** (fruncir los labios): capturado por el blendshape `mouthPucker`.
-- **Brow Down** (bajar las cejas): promedio de `browDownLeft` y `browDownRight`.
-- **Lips Down** (comisuras de los labios hacia abajo): promedio de `mouthFrownLeft` y `mouthFrownRight`.
-
----
+Persiste sesiones de análisis facial en vivo enviadas por el frontend. Una sesión es una secuencia de **eventos de cambio de emoción dominante** detectados en el cliente. El backend valida el payload, calcula la distribución temporal de emociones y persiste todo.
 
 ## Arquitectura
 
 ```
-Frontend (MediaPipe FaceLandmarker)
-  → captura frames a 15fps
-  → aplica calibración baseline por pregunta
-  → acumula frames crudos por pregunta
-
+Frontend (MediaPipe FaceLandmarker + heurísticas FACS en navegador)
+  ▼ Detección a 15fps. Solo se captura un evento cuando cambia
+  ▼ la emoción dominante.
+  ▼
 POST /facial-expression/sessions
-  → AnalyzeFacialExpressionSessionUseCase
-  → calcula puntajes por expresión y por pregunta
-  → persiste FacialExpressionSession + FacialExpressionQuestionResult[]
-  → devuelve FacialExpressionSessionResponse
+  ▼ { duration_ms, events: [{t_ms, emotion, gestures}] }
+  ▼
+SessionCreateRequest (validación Pydantic)
+  ▼
+save_facial_expression_session
+  ▼ compute_distribution -> {emotion: pct, dominant, dominant_pct}
+  ▼ INSERT facial_expression_sessions
+  ▼ INSERT N facial_expression_emotion_events
+  ▼
+SessionDetailResponse
 ```
 
-El frontend envía datos crudos (frames sin puntaje). El backend es el único responsable de calcular los puntajes. Esta separación garantiza consistencia y permite ajustar el algoritmo de scoring sin modificar el frontend.
+El frontend hace toda la detección y clasificación con heurísticas FACS. El backend NO calcula emociones, solo agrega y persiste.
 
----
-
-## Algoritmo de scoring
-
-### Umbrales (THRESHOLDS)
-
-| Expresión  | Umbral |
-|------------|--------|
-| pucker     | 0.15   |
-| brow_down  | 0.12   |
-| lips_down  | 0.12   |
-
-Un frame se considera positivo para una expresión cuando su valor supera el umbral correspondiente, descontando el valor baseline del usuario.
-
-### Pesos (WEIGHTS)
-
-| Expresión  | Peso |
-|------------|------|
-| pucker     | 0.40 |
-| brow_down  | 0.35 |
-| lips_down  | 0.25 |
-
-### Cálculo por pregunta
-
-1. Para cada frame, se resta el valor baseline del usuario a cada blendshape.
-2. Se cuenta la proporción de frames donde el valor desviado supera el umbral.
-3. Esa proporción (0.0 a 1.0) se convierte en puntaje 0–100 por expresión: `score = round((1 - proporcion) * 100)`.
-4. El puntaje compuesto de la pregunta es la suma ponderada de los tres puntajes de expresión.
-
-### Puntaje global
-
-El `overall_score` de la sesión es el promedio simple de los `question_score` de todas las preguntas. Si la sesión no tiene preguntas (caso defensivo, no alcanzable vía API porque el schema exige `min_length=1`), `overall_score` es `None`. Esto distingue "sin datos" de "puntaje cero".
-
-### Aserción de pesos
-
-`WEIGHTS` debe sumar exactamente 1.0. Hay un `assert` al importar `analyze_session.py` que falla en arranque si alguien modifica los pesos sin balancearlos. Esto previene que un cambio accidental rompa la garantía de que el `question_score` está en el rango 0–100.
-
----
-
-## Decisiones de diseño
-
-### MediaPipe FaceLandmarker en el frontend
-
-El frontend usa MediaPipe FaceLandmarker (`face_landmarker.task`, ~3.7MB en float16) para extraer blendshapes en el navegador. MediaPipe no publica una variante "lite" para esta tarea; el modelo regular ya es liviano. El modelo se carga de forma lazy, solo cuando el usuario activa la pantalla de expresión facial. Mientras descarga, se muestra un estado de carga explícito al usuario.
-
-### Calibración baseline al inicio de la sesión
-
-Antes de responder las preguntas, el usuario realiza una calibración de 5 segundos (75 frames a 15fps) con la cara en reposo. Los valores promedio de esa calibración se almacenan como baseline. El scoring usa la desviación respecto al baseline, no valores absolutos. Esto corrige diferencias anatómicas entre usuarios (por ejemplo, personas con las cejas naturalmente bajas).
-
-### Cap de 15fps en el loop de inferencia
-
-El loop de detección facial está limitado a 15 frames por segundo mediante `requestAnimationFrame` con control de tiempo entre ejecuciones. Esto evita el sobrecalentamiento en hardware móvil y reduce el consumo de batería, sin impacto significativo en la calidad del análisis.
-
-### Web Audio API para detección de voz (VAD)
-
-La detección de actividad de voz (VAD) usa la Web Audio API (`AudioContext`, `AnalyserNode`). Se descartó el uso de `SpeechRecognition` (Web Speech API) porque no funciona en iOS Safari, que es uno de los targets del producto. La Web Audio API está disponible en todos los targets: iOS Safari, Chrome, Firefox y Android.
-
-### El frontend envía datos crudos; el backend calcula los puntajes
-
-El frontend no realiza ningún cálculo de scoring. Solo captura frames y los envía al backend. Esta decisión permite modificar umbrales, pesos o el algoritmo completo sin necesidad de actualizar el cliente. También simplifica los tests: la lógica de scoring está centralizada en el caso de uso del backend y se puede testear de forma unitaria.
-
----
-
-## Validación de payload
-
-El schema Pydantic `FacialExpressionSessionRequest` aplica las siguientes restricciones a nivel de API. Cualquier violación devuelve HTTP 422 antes de llegar al caso de uso.
-
-### Constantes de límite
-
-| Constante                     | Valor   | Razón                                                       |
-|-------------------------------|---------|-------------------------------------------------------------|
-| `MAX_FRAMES_PER_QUESTION`     | 18 000  | ~20 minutos a 15fps; muy por encima del uso normal          |
-| `MAX_QUESTIONS_PER_SESSION`   | 50      | Evita payloads desproporcionados                            |
-| `MAX_QUESTION_TEXT_LEN`       | 1 000   | Limita tamaño del texto de pregunta                         |
-| `MAX_DURATION_MS`             | 600 000 | 10 minutos máximo por pregunta                              |
-
-### Constraints por campo
-
-| Campo                                | Restricción                  |
-|--------------------------------------|------------------------------|
-| `baseline.{pucker,brow_down,lips_down}` | `0.0 <= valor <= 1.0`     |
-| `frames[].t`                         | `>= 0`                       |
-| `frames[].{pk,bd,ld}`                | `0.0 <= valor <= 1.0`        |
-| `question_id`                        | `1..50` caracteres           |
-| `question_text`                      | `1..MAX_QUESTION_TEXT_LEN`   |
-| `duration_ms`                        | `0..MAX_DURATION_MS`         |
-| `frames`                             | `<= MAX_FRAMES_PER_QUESTION` |
-| `questions`                          | `1..MAX_QUESTIONS_PER_SESSION` |
-
-Estas validaciones cortan dos clases de problemas: datos corruptos de MediaPipe (valores fuera de `[0,1]`) y vectores de DOS por payload gigante.
-
----
-
-## Manejo de errores y robustez
-
-### Validación de UUID en GET
-
-`GET /facial-expression/sessions/{session_id}` valida el formato UUID con `uuid.UUID(session_id)` antes de tocar la base de datos. Si el string no es un UUID válido, devuelve 404 directamente. Sin esta validación, el driver de Postgres lanza un `ValueError` que bubblea como 500.
-
-### Rollback en POST
-
-`create_session` envuelve la llamada al caso de uso en `try/except`. Si `save_facial_expression_session` falla (por cualquier motivo), el router llama `await session.rollback()` antes de re-lanzar la excepción. Esto garantiza que la conexión async vuelva al pool en estado limpio, sin dejar inserciones a medias visibles a otras transacciones.
-
-### Scores nullable en respuesta
-
-Los campos de score (`overall_score`, `pucker_score`, `brow_down_score`, `lips_down_score`, `question_score`) están tipados como `int | None` en los schemas de respuesta. Esto permite distinguir "scoring no se ejecutó" de "el usuario obtuvo cero". El router ya no transforma `None` en `0` con `or 0`.
-
----
-
-## API endpoints
+## Endpoints
 
 ### POST `/facial-expression/sessions`
 
-Recibe el baseline del usuario y los frames crudos por pregunta. Calcula y persiste los puntajes. Devuelve la sesión completa con resultados por pregunta.
+Persiste una sesión completa. Devuelve el detalle con distribución calculada.
 
-**Request:** `FacialExpressionSessionRequest`
-**Response:** `FacialExpressionSessionResponse`
+**Request body** (`SessionCreateRequest`):
+
+```json
+{
+  "duration_ms": 73000,
+  "events": [
+    {"t_ms": 0,     "emotion": "neutral", "gestures": {}},
+    {"t_ms": 4200,  "emotion": "happy",   "gestures": {"mouthSmile": 0.78, "cheekSquint": 0.45}},
+    {"t_ms": 31000, "emotion": "surprise","gestures": {"jawOpen": 0.62}}
+  ]
+}
+```
+
+**Response 201** (`SessionDetailResponse`):
+
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000001",
+  "duration_ms": 73000,
+  "dominant_emotion": "happy",
+  "dominant_percentage": 37,
+  "emotion_distribution": {"neutral": 6, "happy": 37, "surprise": 57},
+  "created_at": "2026-05-07T22:31:14+00:00",
+  "events": [...]
+}
+```
 
 ### GET `/facial-expression/sessions`
 
-Devuelve la lista de sesiones del usuario autenticado, ordenadas por fecha de creación descendente.
-
-**Response:** `list[FacialExpressionSessionListItem]`
+Lista resumida del usuario autenticado, descendente por fecha.
 
 ### GET `/facial-expression/sessions/{session_id}`
 
-Devuelve el detalle de una sesión específica, incluyendo los resultados por pregunta.
+Detalle completo. UUID malformado o sesión no propia → 404.
 
-**Response:** `FacialExpressionSessionResponse`
+## Algoritmo: distribución temporal (`distribution.py`)
 
----
+Cada evento marca el instante en que **comienza** una emoción. El tiempo en cada emoción es la diferencia con el siguiente evento (o con `duration_ms` para el último). Las repeticiones de la misma emoción acumulan.
 
-## Tablas de base de datos
+Ejemplo:
+
+```
+duration = 10000ms
+events = [{t:0, "happy"}, {t:4000, "neutral"}]
+  -> happy: 0..4000  = 4000ms (40%)
+  -> neutral: 4000..10000 = 6000ms (60%)
+```
+
+### Largest-remainder rounding
+
+Para que las barras siempre sumen 100%, los porcentajes se calculan con **largest-remainder rounding**: floor de cada porcentaje y luego se reparte el residuo (100 - sum) sumando 1 a las emociones con mayor parte fraccional. Esto evita el bug de UX donde tres tercios renderean como 33+33+33=99%.
+
+### Sin eventos o duración cero
+
+`compute_distribution` devuelve `({}, None, None)` cuando no hay eventos o `duration_ms == 0`. Es un caso defensivo: el schema exige `duration_ms >= 0` y al menos un evento es esperable, pero el código no asume que las dos cosas se cumplen.
+
+## Validación de payload
+
+Schema Pydantic `SessionCreateRequest`. Cualquier violación → 422.
+
+| Constante                    | Valor    | Razón                                              |
+|------------------------------|----------|----------------------------------------------------|
+| `MAX_EVENTS_PER_SESSION`     | 5 000    | Sesiones reales tienen <100 eventos; 5k es slack   |
+| `MAX_DURATION_MS`            | 1 800 000| 30 minutos, suficiente para casos extremos         |
+| `MAX_GESTURE_KEYS`           | 60       | 52 blendshapes ARKit + slack                       |
+| `ALLOWED_EMOTIONS`           | set de 7 | Allow-list server-side: `happy`, `sad`, `angry`, `surprise`, `fear`, `disgust`, `neutral` |
+
+| Campo                   | Restricción                  |
+|-------------------------|------------------------------|
+| `duration_ms`           | `0 <= n <= MAX_DURATION_MS`  |
+| `events`                | `<= MAX_EVENTS_PER_SESSION`  |
+| `events[].t_ms`         | `0 <= n <= MAX_DURATION_MS`  |
+| `events[].emotion`      | `1..20` chars + en allow-list |
+| `events[].gestures`     | objeto con `<= 60` claves    |
+
+El router valida emociones contra `ALLOWED_EMOTIONS` antes de persistir y devuelve 422 con mensaje `"Emoción no soportada: <id>"` si encuentra una no permitida. Esto evita que typos del cliente corrompan la analítica silenciosamente.
+
+## Manejo de errores
+
+- `try/except` envuelve la llamada al caso de uso. Si falla, `await session.rollback()` antes de re-lanzar — la conexión vuelve al pool limpia.
+- UUID malformado en GET → 404 (validado con `uuid.UUID(s)` antes de tocar la DB).
+- Eventos con emoción fuera de la allow-list → 422.
+
+## Tablas
 
 ### `facial_expression_sessions`
 
-| Columna        | Tipo      | Descripción                              |
-|----------------|-----------|------------------------------------------|
-| id             | UUID PK   | Identificador único de la sesión         |
-| user_id        | UUID FK   | Usuario propietario de la sesión         |
-| overall_score  | INTEGER NULL | Puntaje global; NULL si la sesión no tiene preguntas |
-| created_at     | TIMESTAMP | Fecha y hora de creación                 |
+| Columna             | Tipo            | Descripción                                       |
+|---------------------|-----------------|---------------------------------------------------|
+| id                  | UUID PK         | Identificador de sesión                           |
+| user_id             | UUID FK         | Owner; CASCADE on user delete                     |
+| duration_ms         | INTEGER         | Duración total de la sesión                       |
+| dominant_emotion    | VARCHAR(20) NULL| Emoción con mayor tiempo; NULL si sin eventos     |
+| dominant_percentage | INTEGER NULL    | % de tiempo en la dominante; NULL si sin eventos  |
+| emotion_distribution| JSONB           | Map `{emotion: percentage}` que suma 100          |
+| created_at          | TIMESTAMPTZ     | Fecha de creación                                 |
 
-### `facial_expression_question_results`
+### `facial_expression_emotion_events`
 
-| Columna         | Tipo      | Descripción                                          |
-|-----------------|-----------|------------------------------------------------------|
-| id              | UUID PK   | Identificador único del resultado                    |
-| session_id      | UUID FK   | Sesión a la que pertenece este resultado             |
-| question_id     | TEXT      | Identificador de la pregunta                         |
-| question_text   | TEXT      | Texto de la pregunta respondida                      |
-| duration_ms     | INTEGER   | Duración de la respuesta en milisegundos             |
-| pucker_score    | INTEGER   | Puntaje 0–100 para la expresión pucker               |
-| brow_down_score | INTEGER   | Puntaje 0–100 para la expresión brow down            |
-| lips_down_score | INTEGER   | Puntaje 0–100 para la expresión lips down            |
-| question_score  | INTEGER   | Puntaje compuesto 0–100 para la pregunta             |
+| Columna     | Tipo        | Descripción                                       |
+|-------------|-------------|---------------------------------------------------|
+| id          | UUID PK     | Identificador de evento                           |
+| session_id  | UUID FK     | Sesión a la que pertenece; CASCADE                |
+| t_ms        | INTEGER     | Timestamp dentro de la sesión                     |
+| emotion     | VARCHAR(20) | Emoción dominante a partir de este instante       |
+| gestures    | JSONB       | Snapshot de gestos activos `{gesture_id: 0..1}`   |
+
+Índice `ix_facial_expression_emotion_events_session_id` para acelerar joins por sesión.
+
+## Migración
+
+`c1d2e3f4a5b6_replace_facial_question_results_with_emotion_events.py` reemplaza el modelo anterior basado en preguntas. Usa `DROP TABLE IF EXISTS` para que sea aplicable sobre cualquier estado intermedio (ej. una DB local que nunca había aplicado la migración previa).
+
+## Decisiones de diseño
+
+### Frontend detecta, backend solo agrega
+Al mover la clasificación al cliente (con MediaPipe + heurísticas FACS) bajamos el costo de cómputo del servidor a casi cero y eliminamos la necesidad de procesar imágenes en el backend. El backend solo hace agregaciones temporales sobre eventos discretos.
+
+### Allow-list de emociones server-side
+El frontend podría tener bugs o un atacante podría POST-ear emociones inventadas. La allow-list garantiza que la columna `dominant_emotion` y las claves de `emotion_distribution` siempre sean valores conocidos para analytics.
+
+### Largest-remainder en lugar de redondeo simple
+Las barras de UI suman 100% siempre. Sin esto, un usuario ve "happy 33 + sad 33 + neutral 33 = 99" y duda de los datos.
+
+### `dominant_*` nullable
+Permite distinguir "sesión sin eventos" de "ningún emotion ganó (imposible)". El frontend renderiza un `—` cuando es NULL.
