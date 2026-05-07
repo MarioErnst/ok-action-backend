@@ -14,7 +14,7 @@ from app.domain.entities.precision_question import PrecisionQuestion
 from app.domain.entities.precision_session import PrecisionSession
 from app.domain.entities.precision_round import PrecisionRound
 from app.domain.entities.facial_expression_session import FacialExpressionSession
-from app.domain.entities.facial_expression_question_result import FacialExpressionQuestionResult
+from app.domain.entities.facial_expression_emotion_event import FacialExpressionEmotionEvent
 
 __all__ = [
     "Role",
@@ -34,5 +34,5 @@ __all__ = [
     "PrecisionSession",
     "PrecisionRound",
     "FacialExpressionSession",
-    "FacialExpressionQuestionResult",
+    "FacialExpressionEmotionEvent",
 ]
