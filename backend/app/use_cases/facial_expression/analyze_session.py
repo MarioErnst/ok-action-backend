@@ -13,6 +13,10 @@ WEIGHTS = {
     "lips_down": 0.25,
 }
 
+# Fail loudly on import if weights are misconfigured: the composite score
+# assumes weights sum to 1.0 to stay within the 0-100 range.
+assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "WEIGHTS must sum to 1.0"
+
 
 def score_expression(
     frames: list[dict],
@@ -100,10 +104,12 @@ def calculate_session_scores(
         )
 
     if question_results:
-        overall = round(
+        overall: int | None = round(
             sum(r["question_score"] for r in question_results) / len(question_results)
         )
     else:
-        overall = 0
+        # No questions means no score — None makes that explicit and prevents
+        # an empty session from being indistinguishable from a perfect-zero score.
+        overall = None
 
     return {"overall_score": overall, "question_results": question_results}
