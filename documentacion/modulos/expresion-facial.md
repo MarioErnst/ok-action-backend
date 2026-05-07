@@ -70,9 +70,9 @@ El `overall_score` de la sesión es el promedio simple de los `question_score` d
 
 ## Decisiones de diseño
 
-### MediaPipe FaceLandmarker lite en el frontend
+### MediaPipe FaceLandmarker en el frontend
 
-Se usa la variante lite del modelo para reducir el tamaño de descarga y el consumo de CPU/GPU en dispositivos móviles. El modelo se carga de forma lazy, solo cuando el usuario activa la pantalla de expresión facial. Mientras descarga, se muestra un estado de carga explícito al usuario.
+El frontend usa MediaPipe FaceLandmarker (`face_landmarker.task`, ~3.7MB en float16) para extraer blendshapes en el navegador. MediaPipe no publica una variante "lite" para esta tarea; el modelo regular ya es liviano. El modelo se carga de forma lazy, solo cuando el usuario activa la pantalla de expresión facial. Mientras descarga, se muestra un estado de carga explícito al usuario.
 
 ### Calibración baseline al inicio de la sesión
 
