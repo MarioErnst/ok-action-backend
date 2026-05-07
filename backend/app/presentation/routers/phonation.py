@@ -20,20 +20,9 @@ from app.use_cases.phonation.sessions import (
 router = APIRouter(prefix="/phonation", tags=["phonation"])
 
 
-@router.post("/sessions", response_model=PhonationSessionResponse, status_code=201)
-async def create_session(
-    request: PhonationSessionRequest,
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    phonation_session = await save_phonation_session(
-        data=request.model_dump(),
-        user=user,
-        session=session,
-    )
-
-    result = await get_phonation_session(str(phonation_session.id), user, session)
-
+def _build_session_response(result) -> PhonationSessionResponse:
+    # Centralises entity-to-schema mapping so create_session and
+    # get_session_detail do not duplicate the same transformation.
     return PhonationSessionResponse(
         id=str(result.id),
         overall_score=float(result.overall_score),
@@ -53,6 +42,23 @@ async def create_session(
             for e in result.exercise_results
         ],
     )
+
+
+@router.post("/sessions", response_model=PhonationSessionResponse, status_code=201)
+async def create_session(
+    request: PhonationSessionRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    phonation_session = await save_phonation_session(
+        data=request.model_dump(),
+        user=user,
+        session=session,
+    )
+
+    result = await get_phonation_session(str(phonation_session.id), user, session)
+
+    return _build_session_response(result)
 
 
 @router.get("/sessions", response_model=list[PhonationSessionListItem])
@@ -82,22 +88,4 @@ async def get_session_detail(
     if not result:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
-    return PhonationSessionResponse(
-        id=str(result.id),
-        overall_score=float(result.overall_score),
-        avg_hz=float(result.avg_hz),
-        observations=result.observations,
-        created_at=result.created_at.isoformat(),
-        exercises=[
-            ExerciseResultResponse(
-                id=str(e.id),
-                exercise_id=e.exercise_id,
-                exercise_type=e.exercise_type,
-                avg_hz=float(e.avg_hz),
-                stability=float(e.stability),
-                breaks=e.breaks,
-                in_range=e.in_range,
-            )
-            for e in result.exercise_results
-        ],
-    )
+    return _build_session_response(result)

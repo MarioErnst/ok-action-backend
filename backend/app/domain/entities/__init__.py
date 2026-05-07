@@ -10,6 +10,9 @@ from app.domain.entities.pronunciation_session import PronunciationSession
 from app.domain.entities.phrase_pronunciation import PhrasePronunciation
 from app.domain.entities.muletillas_session import MuletillasSession, PhraseMuletillas
 from app.domain.entities.live_session import LiveSession
+from app.domain.entities.precision_question import PrecisionQuestion
+from app.domain.entities.precision_session import PrecisionSession
+from app.domain.entities.precision_round import PrecisionRound
 
 __all__ = [
     "Role",
@@ -25,4 +28,7 @@ __all__ = [
     "MuletillasSession",
     "PhraseMuletillas",
     "LiveSession",
+    "PrecisionQuestion",
+    "PrecisionSession",
+    "PrecisionRound",
 ]

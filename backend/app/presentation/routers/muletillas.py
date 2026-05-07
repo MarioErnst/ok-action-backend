@@ -26,6 +26,33 @@ router = APIRouter(prefix="/muletillas", tags=["muletillas"])
 ALLOWED_AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"}
 
 
+def _build_session_response(result) -> MuletillasSessionResponse:
+    # Centralises entity-to-schema mapping so create_session and
+    # get_session_detail do not duplicate the same transformation.
+    return MuletillasSessionResponse(
+        id=str(result.id),
+        question_text=result.question_text,
+        overall_score=float(result.overall_score),
+        fluency_score=float(result.fluency_score),
+        muletillas_score=float(result.muletillas_score),
+        total_muletillas_count=result.total_muletillas_count,
+        muletillas_per_minute=float(result.muletillas_per_minute),
+        feedback=result.feedback,
+        strengths=result.strengths,
+        improvement_areas=result.improvement_areas,
+        created_at=result.created_at.isoformat(),
+        muletillas_detected=[
+            MuletillaDetectedSchema(
+                word=m.word,
+                count=m.count,
+                severity=m.severity,
+                suggestion=m.suggestion,
+            )
+            for m in result.muletillas_detected
+        ],
+    )
+
+
 @router.get("/questions/random", response_model=RandomQuestionResponse)
 async def get_random_question(
     user: User = Depends(get_current_user),
@@ -81,31 +108,10 @@ async def create_session(
     if not result:
         raise HTTPException(status_code=500, detail="Error al recuperar la sesion creada")
 
-    return MuletillasSessionResponse(
-        id=str(result.id),
-        question_text=result.question_text,
-        overall_score=float(result.overall_score),
-        fluency_score=float(result.fluency_score),
-        muletillas_score=float(result.muletillas_score),
-        total_muletillas_count=result.total_muletillas_count,
-        muletillas_per_minute=float(result.muletillas_per_minute),
-        feedback=result.feedback,
-        strengths=result.strengths,
-        improvement_areas=result.improvement_areas,
-        created_at=result.created_at.isoformat(),
-        muletillas_detected=[
-            MuletillaDetectedSchema(
-                word=m.word,
-                count=m.count,
-                severity=m.severity,
-                suggestion=m.suggestion,
-            )
-            for m in result.muletillas_detected
-        ],
-    )
+    return _build_session_response(result)
 
 
-@router.get("/sessions", response_model=list[MuletillasSessionResponse])
+@router.get("/sessions", response_model=list[MuletillasSessionListItem])
 async def list_sessions(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -133,25 +139,4 @@ async def get_session_detail(
     if not result:
         raise HTTPException(status_code=404, detail="Sesion no encontrada")
 
-    return MuletillasSessionResponse(
-        id=str(result.id),
-        question_text=result.question_text,
-        overall_score=float(result.overall_score),
-        fluency_score=float(result.fluency_score),
-        muletillas_score=float(result.muletillas_score),
-        total_muletillas_count=result.total_muletillas_count,
-        muletillas_per_minute=float(result.muletillas_per_minute),
-        feedback=result.feedback,
-        strengths=result.strengths,
-        improvement_areas=result.improvement_areas,
-        created_at=result.created_at.isoformat(),
-        muletillas_detected=[
-            MuletillaDetectedSchema(
-                word=m.word,
-                count=m.count,
-                severity=m.severity,
-                suggestion=m.suggestion,
-            )
-            for m in result.muletillas_detected
-        ],
-    )
+    return _build_session_response(result)

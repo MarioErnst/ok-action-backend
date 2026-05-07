@@ -24,6 +24,38 @@ from app.use_cases.accentuation.sessions import (
 router = APIRouter(prefix="/accentuation", tags=["accentuation"])
 
 
+def _build_session_response(result) -> AccentuationSessionResponse:
+    # Centralises entity-to-schema mapping so create_session and
+    # get_session_detail do not duplicate the same transformation.
+    return AccentuationSessionResponse(
+        id=str(result.id),
+        overall_score=float(result.overall_score),
+        pronunciation_score=float(result.pronunciation_score),
+        rhythm_score=float(result.rhythm_score),
+        intonation_score=float(result.intonation_score),
+        stress_accuracy_score=float(result.stress_accuracy_score),
+        summary_feedback=result.summary_feedback,
+        created_at=result.created_at.isoformat(),
+        evaluations=[
+            PhraseEvaluationResponse(
+                phrase_text=ev.phrase_text,
+                phrase_index=ev.phrase_index,
+                overall_score=float(ev.overall_score),
+                pronunciation_score=float(ev.pronunciation_score),
+                rhythm_score=float(ev.rhythm_score),
+                intonation_score=float(ev.intonation_score),
+                stress_accuracy_score=float(ev.stress_accuracy_score),
+                feedback=ev.feedback,
+                specific_errors=[
+                    SpecificErrorSchema(**error_item)
+                    for error_item in ev.specific_errors
+                ],
+            )
+            for ev in result.phrase_evaluations
+        ],
+    )
+
+
 @router.post("/evaluate", response_model=PhraseEvaluationResponse)
 async def evaluate_phrase_endpoint(
     audio: UploadFile,
@@ -69,33 +101,7 @@ async def create_session(
 
     result = await get_accentuation_session(str(accentuation_session.id), user, session)
 
-    return AccentuationSessionResponse(
-        id=str(result.id),
-        overall_score=float(result.overall_score),
-        pronunciation_score=float(result.pronunciation_score),
-        rhythm_score=float(result.rhythm_score),
-        intonation_score=float(result.intonation_score),
-        stress_accuracy_score=float(result.stress_accuracy_score),
-        summary_feedback=result.summary_feedback,
-        created_at=result.created_at.isoformat(),
-        evaluations=[
-            PhraseEvaluationResponse(
-                phrase_text=ev.phrase_text,
-                phrase_index=ev.phrase_index,
-                overall_score=float(ev.overall_score),
-                pronunciation_score=float(ev.pronunciation_score),
-                rhythm_score=float(ev.rhythm_score),
-                intonation_score=float(ev.intonation_score),
-                stress_accuracy_score=float(ev.stress_accuracy_score),
-                feedback=ev.feedback,
-                specific_errors=[
-                    SpecificErrorSchema(**error_item)
-                    for error_item in ev.specific_errors
-                ],
-            )
-            for ev in result.phrase_evaluations
-        ],
-    )
+    return _build_session_response(result)
 
 
 @router.get("/sessions", response_model=list[AccentuationSessionListItem])
@@ -124,30 +130,4 @@ async def get_session_detail(
     if not result:
         raise HTTPException(status_code=404, detail="Sesion no encontrada")
 
-    return AccentuationSessionResponse(
-        id=str(result.id),
-        overall_score=float(result.overall_score),
-        pronunciation_score=float(result.pronunciation_score),
-        rhythm_score=float(result.rhythm_score),
-        intonation_score=float(result.intonation_score),
-        stress_accuracy_score=float(result.stress_accuracy_score),
-        summary_feedback=result.summary_feedback,
-        created_at=result.created_at.isoformat(),
-        evaluations=[
-            PhraseEvaluationResponse(
-                phrase_text=ev.phrase_text,
-                phrase_index=ev.phrase_index,
-                overall_score=float(ev.overall_score),
-                pronunciation_score=float(ev.pronunciation_score),
-                rhythm_score=float(ev.rhythm_score),
-                intonation_score=float(ev.intonation_score),
-                stress_accuracy_score=float(ev.stress_accuracy_score),
-                feedback=ev.feedback,
-                specific_errors=[
-                    SpecificErrorSchema(**error_item)
-                    for error_item in ev.specific_errors
-                ],
-            )
-            for ev in result.phrase_evaluations
-        ],
-    )
+    return _build_session_response(result)

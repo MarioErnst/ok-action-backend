@@ -25,6 +25,39 @@ router = APIRouter(prefix="/pronunciation", tags=["pronunciation"])
 ALLOWED_AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"}
 
 
+def _build_session_response(result) -> PronunciationSessionResponse:
+    # Centralises entity-to-schema mapping so create_session and
+    # get_session_detail do not duplicate the same transformation.
+    return PronunciationSessionResponse(
+        id=str(result.id),
+        level=result.level,
+        overall_score=float(result.overall_score),
+        vowel_score=float(result.vowel_score),
+        consonant_score=float(result.consonant_score),
+        fluency_score=float(result.fluency_score),
+        intelligibility_score=float(result.intelligibility_score),
+        summary_feedback=result.summary_feedback,
+        created_at=result.created_at.isoformat(),
+        evaluations=[
+            PhrasePronunciationResponse(
+                phrase_text=ev.phrase_text,
+                phrase_index=ev.phrase_index,
+                overall_score=float(ev.overall_score),
+                vowel_score=float(ev.vowel_score),
+                consonant_score=float(ev.consonant_score),
+                fluency_score=float(ev.fluency_score),
+                intelligibility_score=float(ev.intelligibility_score),
+                feedback=ev.feedback,
+                phoneme_errors=[
+                    PhonemeErrorSchema(**error_item)
+                    for error_item in ev.phoneme_errors
+                ],
+            )
+            for ev in result.phrase_pronunciations
+        ],
+    )
+
+
 @router.post("/evaluate", response_model=PhrasePronunciationResponse)
 async def evaluate_phrase_endpoint(
     audio: UploadFile,
@@ -73,34 +106,7 @@ async def create_session(
     if not result:
         raise HTTPException(status_code=500, detail="Error al recuperar la sesion creada")
 
-    return PronunciationSessionResponse(
-        id=str(result.id),
-        level=result.level,
-        overall_score=float(result.overall_score),
-        vowel_score=float(result.vowel_score),
-        consonant_score=float(result.consonant_score),
-        fluency_score=float(result.fluency_score),
-        intelligibility_score=float(result.intelligibility_score),
-        summary_feedback=result.summary_feedback,
-        created_at=result.created_at.isoformat(),
-        evaluations=[
-            PhrasePronunciationResponse(
-                phrase_text=ev.phrase_text,
-                phrase_index=ev.phrase_index,
-                overall_score=float(ev.overall_score),
-                vowel_score=float(ev.vowel_score),
-                consonant_score=float(ev.consonant_score),
-                fluency_score=float(ev.fluency_score),
-                intelligibility_score=float(ev.intelligibility_score),
-                feedback=ev.feedback,
-                phoneme_errors=[
-                    PhonemeErrorSchema(**error_item)
-                    for error_item in ev.phoneme_errors
-                ],
-            )
-            for ev in result.phrase_pronunciations
-        ],
-    )
+    return _build_session_response(result)
 
 
 @router.get("/sessions", response_model=list[PronunciationSessionListItem])
@@ -130,31 +136,4 @@ async def get_session_detail(
     if not result:
         raise HTTPException(status_code=404, detail="Sesion no encontrada")
 
-    return PronunciationSessionResponse(
-        id=str(result.id),
-        level=result.level,
-        overall_score=float(result.overall_score),
-        vowel_score=float(result.vowel_score),
-        consonant_score=float(result.consonant_score),
-        fluency_score=float(result.fluency_score),
-        intelligibility_score=float(result.intelligibility_score),
-        summary_feedback=result.summary_feedback,
-        created_at=result.created_at.isoformat(),
-        evaluations=[
-            PhrasePronunciationResponse(
-                phrase_text=ev.phrase_text,
-                phrase_index=ev.phrase_index,
-                overall_score=float(ev.overall_score),
-                vowel_score=float(ev.vowel_score),
-                consonant_score=float(ev.consonant_score),
-                fluency_score=float(ev.fluency_score),
-                intelligibility_score=float(ev.intelligibility_score),
-                feedback=ev.feedback,
-                phoneme_errors=[
-                    PhonemeErrorSchema(**error_item)
-                    for error_item in ev.phoneme_errors
-                ],
-            )
-            for ev in result.phrase_pronunciations
-        ],
-    )
+    return _build_session_response(result)

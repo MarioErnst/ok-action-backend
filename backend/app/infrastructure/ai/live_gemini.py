@@ -40,6 +40,19 @@ _MUL_DET_SCHEMA = {
     "required": ["w", "n", "ctx"],
 }
 
+_PRECISION_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "relevance": {"type": "integer"},
+        "directness": {"type": "integer"},
+        "conciseness": {"type": "integer"},
+        "overall": {"type": "integer"},
+        "feedback": {"type": "string"},
+        "audio_intelligible": {"type": "boolean"},
+    },
+    "required": ["relevance", "directness", "conciseness", "overall", "feedback", "audio_intelligible"],
+}
+
 _DIM_SCHEMAS: dict[str, dict] = {
     "pron": {
         "type": "object",
@@ -74,18 +87,23 @@ _MIN_AUDIO_BYTES = 6400
 def _build_response_schema(selected_dims: list[str]) -> dict:
     """Builds a JSON schema restricted to the selected dimensions."""
     dims_props = {dim: _DIM_SCHEMAS[dim] for dim in selected_dims if dim in _DIM_SCHEMAS}
+    top_props: dict = {
+        "dims": {
+            "type": "object",
+            "properties": dims_props,
+            "required": list(dims_props.keys()),
+        },
+        "overall": {"type": "number"},
+        "fb": {"type": "string"},
+    }
+    required = ["dims", "overall", "fb"]
+    if "precision" in selected_dims:
+        top_props["precision"] = _PRECISION_SCHEMA
+        required.append("precision")
     return {
         "type": "object",
-        "properties": {
-            "dims": {
-                "type": "object",
-                "properties": dims_props,
-                "required": list(dims_props.keys()),
-            },
-            "overall": {"type": "number"},
-            "fb": {"type": "string"},
-        },
-        "required": ["dims", "overall", "fb"],
+        "properties": top_props,
+        "required": required,
     }
 
 

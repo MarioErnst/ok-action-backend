@@ -1,4 +1,12 @@
 _DIM_ANALYSIS_SECTIONS = {
+    "precision": (
+        "- PRECISION: Evalua la respuesta a la pregunta recibida. "
+        "relevance (0-100): ¿Respondio la pregunta directamente? "
+        "directness (0-100): ¿Llego al punto sin rodeos? "
+        "conciseness (0-100): ¿Fue conciso sin repetir ideas? "
+        "overall = round(relevance*0.4 + directness*0.3 + conciseness*0.3). "
+        "Si el audio es ininteligible, audio_intelligible=false y todos los scores en 0."
+    ),
     "pron": (
         "- PRONUNCIACION: Evalua vocales (/a/, /e/, /i/, /o/, /u/), consonantes "
         "(especialmente /r/, /rr/, /b/, /v/, /s/, /ll/, /y/, /j/, /d/ intervocalica), "
@@ -26,7 +34,7 @@ def build_system_prompt(selected_dims: list[str]) -> str:
     Only includes instructions for the selected dimensions.
 
     Args:
-        selected_dims: List of dimension keys to include. Valid values: "pron", "acc", "mul".
+        selected_dims: List of dimension keys to include. Valid values: "pron", "acc", "mul", "precision".
 
     Returns:
         A formatted prompt string with analysis instructions for the requested dimensions.
