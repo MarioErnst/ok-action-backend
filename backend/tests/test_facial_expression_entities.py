@@ -1,38 +1,26 @@
-import uuid
-
-from app.domain.entities.facial_expression_question_result import FacialExpressionQuestionResult
 from app.domain.entities.facial_expression_session import FacialExpressionSession
+from app.domain.entities.facial_expression_emotion_event import (
+    FacialExpressionEmotionEvent,
+)
 
 
-def test_facial_expression_session_defaults():
+def test_session_defaults():
     s = FacialExpressionSession(
-        user_id=uuid.uuid4(),
-        baseline_pucker=0.05,
-        baseline_brow_down=0.08,
-        baseline_lips_down=0.04,
+        user_id="00000000-0000-0000-0000-000000000001",
+        duration_ms=10000,
     )
     assert s.id is not None
-    assert s.overall_score is None
     assert s.created_at is not None
-    assert s.baseline_pucker == 0.05
-    assert s.baseline_brow_down == 0.08
-    assert s.baseline_lips_down == 0.04
+    assert s.emotion_distribution == {}
+    assert s.dominant_emotion is None
+    assert s.dominant_percentage is None
 
 
-def test_facial_expression_question_result_defaults():
-    r = FacialExpressionQuestionResult(
-        session_id=uuid.uuid4(),
-        question_id="q1",
-        question_text="¿Cuéntanos sobre tu experiencia?",
-        duration_ms=28000,
-        frames=[],
+def test_event_defaults():
+    e = FacialExpressionEmotionEvent(
+        session_id="00000000-0000-0000-0000-000000000001",
+        t_ms=1234,
+        emotion="happy",
     )
-    assert r.id is not None
-    assert r.pucker_score is None
-    assert r.brow_down_score is None
-    assert r.lips_down_score is None
-    assert r.question_score is None
-    assert r.question_id == "q1"
-    assert r.duration_ms == 28000
-    assert r.created_at is not None
-    assert r.frames == []
+    assert e.id is not None
+    assert e.gestures == {}

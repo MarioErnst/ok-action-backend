@@ -19,17 +19,10 @@ def _make_user():
 
 
 VALID_PAYLOAD = {
-    "baseline": {"pucker": 0.05, "brow_down": 0.08, "lips_down": 0.04},
-    "questions": [
-        {
-            "question_id": "q1",
-            "question_text": "¿Cuéntanos sobre tu experiencia?",
-            "duration_ms": 20000,
-            "frames": [
-                {"t": 0, "pk": 0.06, "bd": 0.09, "ld": 0.05},
-                {"t": 66, "pk": 0.07, "bd": 0.08, "ld": 0.04},
-            ],
-        }
+    "duration_ms": 10000,
+    "events": [
+        {"t_ms": 0, "emotion": "happy", "gestures": {"mouthSmile": 0.7}},
+        {"t_ms": 5000, "emotion": "neutral", "gestures": {}},
     ],
 }
 
@@ -38,9 +31,12 @@ VALID_PAYLOAD = {
 async def test_create_session_returns_201():
     mock_session_obj = MagicMock()
     mock_session_obj.id = "00000000-0000-0000-0000-000000000002"
-    mock_session_obj.overall_score = 95
+    mock_session_obj.duration_ms = 10000
+    mock_session_obj.dominant_emotion = "happy"
+    mock_session_obj.dominant_percentage = 50
+    mock_session_obj.emotion_distribution = {"happy": 50, "neutral": 50}
     mock_session_obj.created_at.isoformat.return_value = "2026-05-07T00:00:00+00:00"
-    mock_session_obj.question_results = []
+    mock_session_obj.events = []
 
     async def override_get_session():
         yield AsyncMock()
@@ -77,8 +73,9 @@ async def test_create_session_returns_201():
 
     assert response.status_code == 201
     data = response.json()
-    assert "id" in data
-    assert "overall_score" in data
+    assert data["id"]
+    assert data["dominant_emotion"] == "happy"
+    assert data["emotion_distribution"] == {"happy": 50, "neutral": 50}
 
 
 @pytest.mark.asyncio
@@ -93,17 +90,14 @@ async def test_get_session_not_found():
     app.dependency_overrides[get_current_user] = override_get_current_user
 
     try:
-        with (
-            patch(
-                "app.presentation.routers.facial_expression.get_facial_expression_session",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
+        with patch(
+            "app.presentation.routers.facial_expression.get_facial_expression_session",
+            new_callable=AsyncMock,
+            return_value=None,
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
-                # Use a valid UUID that simply isn't in the DB.
                 response = await client.get(
                     "/facial-expression/sessions/00000000-0000-0000-0000-000000000099",
                     headers={"Authorization": "Bearer faketoken"},
@@ -141,8 +135,8 @@ async def test_get_session_invalid_uuid_returns_404():
 
 
 @pytest.mark.asyncio
-async def test_create_session_rejects_out_of_range_baseline():
-    """Baseline values outside [0, 1] must be rejected at the schema level."""
+async def test_create_session_rejects_unknown_emotion():
+    """Emotions outside the allow-list must return 422."""
     async def override_get_session():
         yield AsyncMock()
 
@@ -153,14 +147,9 @@ async def test_create_session_rejects_out_of_range_baseline():
     app.dependency_overrides[get_current_user] = override_get_current_user
 
     bad_payload = {
-        "baseline": {"pucker": 1.5, "brow_down": 0.0, "lips_down": 0.0},
-        "questions": [
-            {
-                "question_id": "q1",
-                "question_text": "test",
-                "duration_ms": 1000,
-                "frames": [{"t": 0, "pk": 0.1, "bd": 0.1, "ld": 0.1}],
-            }
+        "duration_ms": 5000,
+        "events": [
+            {"t_ms": 0, "emotion": "bored", "gestures": {}},
         ],
     }
 
@@ -180,8 +169,7 @@ async def test_create_session_rejects_out_of_range_baseline():
 
 
 @pytest.mark.asyncio
-async def test_create_session_rejects_empty_questions():
-    """An empty questions list must be rejected — sessions need at least one."""
+async def test_create_session_rejects_negative_t_ms():
     async def override_get_session():
         yield AsyncMock()
 
@@ -192,8 +180,8 @@ async def test_create_session_rejects_empty_questions():
     app.dependency_overrides[get_current_user] = override_get_current_user
 
     bad_payload = {
-        "baseline": {"pucker": 0.05, "brow_down": 0.05, "lips_down": 0.05},
-        "questions": [],
+        "duration_ms": 5000,
+        "events": [{"t_ms": -1, "emotion": "happy", "gestures": {}}],
     }
 
     try:
@@ -231,8 +219,6 @@ async def test_create_session_rolls_back_on_use_case_error():
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
-            # raise_app_exceptions=False so the test asserts on the response,
-            # not the propagated exception (FastAPI lets RuntimeError bubble in tests).
             async with AsyncClient(
                 transport=ASGITransport(app=app, raise_app_exceptions=False),
                 base_url="http://test",
