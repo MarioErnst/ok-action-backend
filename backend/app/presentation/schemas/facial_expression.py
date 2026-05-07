@@ -1,86 +1,72 @@
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # --- Limits ---
-# MediaPipe blendshape values are normalized [0.0, 1.0]. Reject anything outside
-# that range to prevent corrupted captures from skewing scoring.
-# Frame and question caps prevent memory exhaustion through oversized payloads.
-MAX_FRAMES_PER_QUESTION = 18_000   # ~20 minutes at 15fps; far above any normal session
-MAX_QUESTIONS_PER_SESSION = 50
-MAX_QUESTION_TEXT_LEN = 1000
-MAX_DURATION_MS = 600_000           # 10 minutes per question
+# An "event" is recorded only when the dominant emotion changes, so realistic
+# sessions produce tens to a few hundred events. The cap protects against
+# malicious payloads while still allowing very long or rapidly-changing sessions.
+MAX_EVENTS_PER_SESSION = 5000
+MAX_DURATION_MS = 30 * 60 * 1000  # 30 minutes
+MAX_GESTURE_KEYS = 60             # there are 52 ARKit blendshapes; 60 is a soft cap
+
+
+# --- Allowed values ---
+# Server-side allow-list keeps the database column clean and lets the frontend
+# add new emotions without the backend silently accepting typos.
+ALLOWED_EMOTIONS = {"happy", "sad", "angry", "surprise", "fear", "disgust", "neutral"}
 
 
 # --- Request ---
 
-class BlendshapeFrame(BaseModel):
-    """Single face detection frame: abbreviated fields to minimize JSON payload across high-frequency captures."""
+class EmotionEventInput(BaseModel):
+    """One detected change of dominant emotion within a session."""
 
-    t: int = Field(ge=0)               # timestamp ms since question start
-    pk: float = Field(ge=0.0, le=1.0)  # mouthPucker
-    bd: float = Field(ge=0.0, le=1.0)  # browDown average
-    ld: float = Field(ge=0.0, le=1.0)  # lipsDown average
-
-
-class BaselineData(BaseModel):
-    """User's neutral face blendshape baseline captured at session start for deviation scoring."""
-
-    pucker: float = Field(ge=0.0, le=1.0)
-    brow_down: float = Field(ge=0.0, le=1.0)
-    lips_down: float = Field(ge=0.0, le=1.0)
+    t_ms: int = Field(ge=0, le=MAX_DURATION_MS)
+    emotion: str = Field(min_length=1, max_length=20)
+    # gestures is a free-form map of gesture_id -> intensity 0..1; we cap the
+    # number of keys to avoid unbounded JSON growth from a malicious client.
+    gestures: dict[str, float] = Field(default_factory=dict, max_length=MAX_GESTURE_KEYS)
 
 
-class QuestionPayload(BaseModel):
-    """Raw frame data captured during one question in a facial expression session."""
+class SessionCreateRequest(BaseModel):
+    """Persist a completed facial-expression analysis session."""
 
-    question_id: str = Field(min_length=1, max_length=50)
-    question_text: str = Field(min_length=1, max_length=MAX_QUESTION_TEXT_LEN)
     duration_ms: int = Field(ge=0, le=MAX_DURATION_MS)
-    frames: list[BlendshapeFrame] = Field(max_length=MAX_FRAMES_PER_QUESTION)
-
-
-class FacialExpressionSessionRequest(BaseModel):
-    """Request payload: baseline data + raw frame captures per question."""
-
-    baseline: BaselineData
-    questions: list[QuestionPayload] = Field(min_length=1, max_length=MAX_QUESTIONS_PER_SESSION)
+    events: list[EmotionEventInput] = Field(default_factory=list, max_length=MAX_EVENTS_PER_SESSION)
 
 
 # --- Response ---
 
-class QuestionResultResponse(BaseModel):
-    """Computed scores for a single question: per-expression and composite score.
-
-    Scores are nullable so callers can distinguish missing data from a zero score.
-    """
+class EmotionEventResponse(BaseModel):
+    """Single event in the saved session."""
 
     model_config = ConfigDict(from_attributes=True)
 
-    question_id: str
-    question_text: str
+    t_ms: int
+    emotion: str
+    gestures: dict[str, float]
+
+
+class SessionDetailResponse(BaseModel):
+    """Full session with computed distribution and event timeline."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
     duration_ms: int
-    pucker_score: int | None
-    brow_down_score: int | None
-    lips_down_score: int | None
-    question_score: int | None
-
-
-class FacialExpressionSessionResponse(BaseModel):
-    """Full session response: overall score and per-question results computed by backend."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    overall_score: int | None
-    question_results: list[QuestionResultResponse]
+    dominant_emotion: str | None
+    dominant_percentage: int | None
+    emotion_distribution: dict[str, int]
     created_at: str
+    events: list[EmotionEventResponse]
 
 
-class FacialExpressionSessionListItem(BaseModel):
-    """Summary of a facial expression session for list views."""
+class SessionListItem(BaseModel):
+    """Summary for the sessions list."""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    overall_score: int | None
+    duration_ms: int
+    dominant_emotion: str | None
+    dominant_percentage: int | None
     created_at: str
