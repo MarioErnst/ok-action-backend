@@ -18,7 +18,6 @@ from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.linguistic_versatility import (
     EvaluateRoundResponse,
-    FreeSessionResponse,
     QuestionSchema,
     RoundResultResponse,
     SessionDetailResponse,
@@ -27,9 +26,6 @@ from app.presentation.schemas.linguistic_versatility import (
 )
 from app.use_cases.linguistic_versatility.abandon_session import (
     abandon_versatility_session,
-)
-from app.use_cases.linguistic_versatility.evaluate_free import (
-    evaluate_free_versatility_session,
 )
 from app.use_cases.linguistic_versatility.evaluate_response import (
     evaluate_versatility_response,
@@ -225,34 +221,3 @@ async def history(
     ]
 
 
-@router.post("/free", response_model=FreeSessionResponse, status_code=201)
-async def free_session(
-    audio: UploadFile = File(...),
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    """Free-mode session in one shot: upload one audio, get one analysis."""
-    audio_bytes = await audio.read()
-    if len(audio_bytes) > MAX_AUDIO_BYTES:
-        raise HTTPException(status_code=413, detail="Audio demasiado grande")
-    mime_type = audio.content_type or "audio/webm"
-
-    try:
-        session, round_entity = await evaluate_free_versatility_session(
-            db, user_id=user.id, audio_bytes=audio_bytes, mime_type=mime_type
-        )
-    except VersatilityGeminiError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=502, detail=str(exc))
-    except Exception:
-        await db.rollback()
-        raise
-
-    await db.commit()
-    return FreeSessionResponse(
-        session_id=str(session.id),
-        versatility_score=round_entity.versatility_score,
-        vocabulary_richness=round_entity.vocabulary_richness,
-        feedback=round_entity.feedback,
-        audio_intelligible=round_entity.audio_intelligible,
-    )

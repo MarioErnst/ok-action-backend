@@ -101,11 +101,3 @@ class SessionListItem(BaseModel):
     created_at: str
 
 
-class FreeSessionResponse(BaseModel):
-    """Returned from POST /free with the single round result inlined."""
-
-    session_id: str
-    versatility_score: int | None = Field(default=None, ge=0, le=100)
-    vocabulary_richness: int | None = Field(default=None, ge=1, le=3)
-    feedback: str | None
-    audio_intelligible: bool
