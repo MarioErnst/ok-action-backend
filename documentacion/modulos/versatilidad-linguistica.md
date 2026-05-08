@@ -4,10 +4,9 @@
 
 Evalúa la **versatilidad lingüística** del usuario: qué tan variado es su vocabulario, si repite palabras de contenido o usa sinónimos, y la riqueza general de su léxico. La evaluación es íntegramente client-server: el cliente graba audio y lo sube al backend, el backend lo despacha a Gemini con un prompt afinado, y persiste solo las **métricas de desempeño** (no la transcripción ni el audio).
 
-Dos modos de uso:
+Existe un único modo en este módulo: **guiado** — 3 preguntas predefinidas. El usuario responde una por una; cada respuesta se evalúa por separado y al final se promedian los puntajes.
 
-- **Guiado**: 3 preguntas predefinidas. El usuario responde una por una; cada respuesta se evalúa por separado y al final se promedian los puntajes.
-- **Libre**: el usuario habla de lo que quiera durante el tiempo que necesite; al detener, se manda un único audio y se obtiene una sola evaluación.
+> **Nota:** la evaluación de versatilidad sobre habla libre está integrada como dimensión `lex` del módulo Live Session (`live_session.py`). El service Gemini de este módulo se reutiliza desde allá. Ver `documentacion/modulos/sesion-libre.md`.
 
 ## Modelo y stack
 
@@ -37,8 +36,6 @@ EvaluateRoundResponse → frontend
 
 ## Endpoints
 
-### Modo guiado
-
 | Método | Path                                                   | Qué hace                                                 |
 |--------|--------------------------------------------------------|----------------------------------------------------------|
 | POST   | `/linguistic-versatility/sessions`                     | Abre sesión, selecciona 3 preguntas evitando recientes   |
@@ -47,12 +44,6 @@ EvaluateRoundResponse → frontend
 | PATCH  | `/linguistic-versatility/sessions/{id}/abandon`        | Marca la sesión como abandonada (idempotente)            |
 | GET    | `/linguistic-versatility/sessions/{id}`                | Detalle completo con todos los rounds                    |
 | GET    | `/linguistic-versatility/history`                      | Lista de sesiones del usuario, descendente por fecha     |
-
-### Modo libre
-
-| Método | Path                              | Qué hace                                              |
-|--------|-----------------------------------|-------------------------------------------------------|
-| POST   | `/linguistic-versatility/free`    | Recibe audio único, crea + finaliza sesión + round    |
 
 Todos requieren `Authorization: Bearer <token>`.
 
