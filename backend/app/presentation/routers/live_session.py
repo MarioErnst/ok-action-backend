@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.entities.precision_round import PrecisionRound
 from app.domain.entities.precision_session import PrecisionSession
 from app.domain.entities.user import User
+from app.infrastructure.ai.linguistic_versatility_gemini import (
+    GeminiVersatilityService,
+    VersatilityGeminiError,
+)
 from app.infrastructure.ai.live_gemini import analyze_audio_segment
 from app.infrastructure.audio.silence_detector import SilenceDetector
 from app.infrastructure.db.session import get_session
@@ -28,11 +32,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/live", tags=["live-session"])
 
 ANALYSIS_INTERVAL_SECONDS = 5
-VALID_DIMS = {"pron", "acc", "mul", "precision"}
+VALID_DIMS = {"pron", "acc", "mul", "precision", "lex"}
 
 # PCM constants at 16kHz 16-bit mono
 _QA_CALIBRATION_BYTES = 16000   # 500ms = 16000 bytes
 _QA_SILENCE_2S_BYTES = 64000    # 2s = 64000 bytes
+
+# Cap on the lex audio buffer (~30 minutes of 16kHz 16-bit mono PCM = ~57 MB).
+# Matches MAX_DURATION_SEC = 300 with headroom; protects RAM if the loop ever
+# runs longer than expected.
+_LEX_MAX_BYTES = 60 * 1024 * 1024
+
+_versatility_service = GeminiVersatilityService()
 
 
 @router.websocket("/session")
@@ -71,8 +82,11 @@ async def live_session_ws(
         await ws.close(code=4003, reason="Invalid dims")
         return
 
-    standard_dims = [d for d in dims if d != "precision"]
+    # 'precision' has its own QA loop; 'lex' is evaluated only at session
+    # close. Both are excluded from the cyclic per-5s analysis.
+    standard_dims = [d for d in dims if d not in ("precision", "lex")]
     has_precision = "precision" in dims
+    has_lex = "lex" in dims
 
     state = LiveSessionState(
         user_id=str(user.id),
@@ -82,6 +96,9 @@ async def live_session_ws(
     stop_event = asyncio.Event()
     audio_buffer = bytearray()
     qa_buffer = bytearray()
+    # Separate buffer that accumulates the entire session audio (never drained
+    # mid-session) so the lex evaluation at close can analyze the whole thing.
+    lex_buffer = bytearray() if has_lex else None
     answer_done_event = asyncio.Event()
 
     await ws.send_json({"type": "ready"})
@@ -98,6 +115,11 @@ async def live_session_ws(
                     audio_buffer.extend(message["bytes"])
                     if has_precision:
                         qa_buffer.extend(message["bytes"])
+                    # Cap the lex buffer so a runaway session can't exhaust RAM.
+                    # Past the cap we silently drop new bytes — the analysis still
+                    # reflects the first 30 minutes of speech, which is plenty.
+                    if lex_buffer is not None and len(lex_buffer) < _LEX_MAX_BYTES:
+                        lex_buffer.extend(message["bytes"])
                 elif message.get("text"):
                     data = json.loads(message["text"])
                     if data.get("type") == "end":
@@ -279,7 +301,28 @@ async def live_session_ws(
     finally:
         if not state.stop_reason:
             state.stop_reason = "user_ended"
-        # Send session_ended before saving so the client transitions immediately.
+
+        # If lex was selected, run a single end-of-session versatility analysis
+        # over the entire accumulated audio. We do this BEFORE session_ended so
+        # the client receives the lex_result message in the same connection.
+        # Failure here is non-fatal: log it, send no lex_result, save the rest.
+        if lex_buffer is not None and len(lex_buffer) > 0:
+            try:
+                lex_data = await _versatility_service.evaluate_free(
+                    bytes(lex_buffer), "audio/pcm;rate=16000"
+                )
+                state.lex_result = lex_data
+                try:
+                    await ws.send_json({"type": "lex_result", "data": lex_data})
+                except Exception:
+                    pass
+            except VersatilityGeminiError as exc:
+                logger.warning("Versatility analysis failed: %s", exc)
+            except Exception as exc:
+                logger.error("Unexpected versatility analysis error: %s", exc)
+
+        # Send session_ended after lex_result so the client knows the order:
+        # any lex_result message arrives strictly before the terminal event.
         # The DB operation outlives the WebSocket connection.
         try:
             await ws.send_json({"type": "session_ended", "reason": state.stop_reason})
