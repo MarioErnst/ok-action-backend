@@ -13,12 +13,13 @@ def test_prompt_includes_only_selected_dims():
 
 
 def test_prompt_includes_all_dims_when_all_selected():
-    prompt = build_system_prompt(["pron", "acc", "mul", "pause", "fluency"])
+    prompt = build_system_prompt(["pron", "acc", "mul", "pause", "fluency", "consistency"])
     assert "pronunciacion" in prompt.lower()
     assert "acentuacion" in prompt.lower()
     assert "muletillas" in prompt.lower()
     assert "pausas" in prompt.lower()
     assert "fluidez" in prompt.lower()
+    assert "consistencia" in prompt.lower()
 
 
 def test_prompt_includes_analysis_rules():

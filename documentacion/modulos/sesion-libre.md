@@ -45,7 +45,7 @@ Enviado inmediatamente al abrir la conexión. El servidor espera máximo 10 segu
 }
 ```
 
-Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas), `"pause"` (pausas), `"fluency"` (fluidez), `"precision"` (Q&A guiado, ver más abajo) y `"lex"` (versatilidad lingüística — analizada al cierre). Se puede enviar cualquier subconjunto. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
+Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas), `"pause"` (pausas), `"fluency"` (fluidez), `"consistency"` (consistencia), `"precision"` (Q&A guiado, ver más abajo) y `"lex"` (versatilidad lingüística — analizada al cierre). Se puede enviar cualquier subconjunto. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
 
 #### Comportamiento de `lex` (versatilidad)
 
@@ -316,6 +316,12 @@ La respuesta de Gemini se almacena en `dims.fluency` e incluye:
 
 La diferencia con el módulo standalone de Fluidez es que sesión libre no tiene una consigna específica. Por eso no evalúa `prompt_alignment_score`; solo continuidad, ritmo y trabas del habla espontánea.
 
+## Integración con Consistencia
+
+Cuando el usuario selecciona `"consistency"`, sesión libre analiza estabilidad del desempeño oral dentro del ciclo estándar de 5 segundos. La respuesta se guarda en `dims.consistency` e incluye score, clasificación, submétricas de ritmo, volumen, claridad, foco, seguridad y estructura, además de eventos de variación claros en `det`.
+
+La diferencia con el módulo standalone de Consistencia es que sesión libre evalúa estabilidad local por segmento; el módulo dedicado compara inicio, medio y cierre de una intervención completa.
+
 ---
 
 ## Decisiones de diseño
@@ -346,5 +352,5 @@ El token se valida en `_authenticate_ws()` antes de procesar cualquier mensaje. 
 - **Máximo 3 errores acumulados:** `MAX_ERRORS = 3`. El conteo incluye errores de todas las dimensiones en todos los ciclos. Un ciclo con 2 errores de pronunciación y 1 de acentuación suma 3 y termina la sesión.
 - **Puntaje mínimo de 70:** `MIN_SCORE = 70`. Cualquier dimensión con `sc < 70` en un solo ciclo termina la sesión. Este umbral es estricto por diseño: el objetivo es que el usuario mantenga calidad consistente, no que promedia bien.
 - **Formato de audio:** el cliente debe enviar PCM crudo de 16 bits, 16 kHz, monocanal. Otros formatos o tasas de muestreo producirán análisis incorrectos sin error explícito del servidor.
-- **Dimensiones válidas:** `"pron"`, `"acc"`, `"mul"`, `"pause"`, `"fluency"`, `"precision"` y `"lex"`. El servidor rechaza la sesión si se envía cualquier otro valor.
+- **Dimensiones válidas:** `"pron"`, `"acc"`, `"mul"`, `"pause"`, `"fluency"`, `"consistency"`, `"precision"` y `"lex"`. El servidor rechaza la sesión si se envía cualquier otro valor.
 - **Concurrencia:** cada conexión WebSocket crea su propia instancia de `GeminiLiveService` y `LiveSessionState`. No existe estado compartido entre sesiones.

@@ -39,6 +39,13 @@ _DIM_ANALYSIS_SECTIONS = {
         "Para cada traba relevante incluye en 'det' un objeto con w=palabra o fragmento, "
         "n=ocurrencias y ctx=contexto breve."
     ),
+    "consistency": (
+        "- CONSISTENCIA: Evalua si el desempeno del hablante se mantiene estable en el segmento actual. "
+        "Mide ritmo, volumen, claridad, foco, seguridad y estructura. "
+        "No evalua si la respuesta es perfecta, sino si la calidad se sostiene sin cambios bruscos. "
+        "Devuelve sc (0-100), classification, rhythm, volume, clarity, focus, confidence, structure, "
+        "note y det. En det incluye solo eventos claros de variacion: area, severity y note."
+    ),
 }
 
 
