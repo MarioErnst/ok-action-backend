@@ -25,6 +25,12 @@ _DIM_ANALYSIS_SECTIONS = {
         "Para cada muletilla detectada incluye en 'ctx' un fragmento breve (maximo 10 palabras) "
         "de la transcripcion que muestre el contexto donde aparecio."
     ),
+    "pause": (
+        "- PAUSAS: Evalua el uso de silencios entre ideas. No marques una pausa como mala por defecto: "
+        "distingue pausas intencionales que ordenan el discurso, pocas pausas que vuelven el habla apresurada "
+        "y demasiadas pausas que cortan la fluidez. Estima cantidad total, duracion promedio, pausa mas larga "
+        "y porcentaje aproximado de silencio del segmento."
+    ),
 }
 
 
@@ -34,7 +40,7 @@ def build_system_prompt(selected_dims: list[str]) -> str:
     Only includes instructions for the selected dimensions.
 
     Args:
-        selected_dims: List of dimension keys to include. Valid values: "pron", "acc", "mul", "precision".
+        selected_dims: List of dimension keys to include. Valid values: "pron", "acc", "mul", "precision", "pause".
 
     Returns:
         A formatted prompt string with analysis instructions for the requested dimensions.

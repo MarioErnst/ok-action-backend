@@ -40,3 +40,4 @@ class User(Base):
     linguistic_versatility_sessions: Mapped[list["LinguisticVersatilitySession"]] = relationship(
         back_populates="user"
     )
+    pause_sessions: Mapped[list["PauseSession"]] = relationship(back_populates="user")

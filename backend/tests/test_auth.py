@@ -45,10 +45,10 @@ async def test_login_success():
 
     assert response.status_code == 200
     data = response.json()
-    assert data["email"] == "test@okaction.local"
-    assert data["full_name"] == "Usuario Demo"
     assert "access_token" in data
-    assert "id" in data
+    assert data["user"]["email"] == "test@okaction.local"
+    assert data["user"]["full_name"] == "Usuario Demo"
+    assert "id" in data["user"]
 
 
 @pytest.mark.asyncio

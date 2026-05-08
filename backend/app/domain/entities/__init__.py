@@ -18,6 +18,7 @@ from app.domain.entities.facial_expression_emotion_event import FacialExpression
 from app.domain.entities.linguistic_versatility_question import LinguisticVersatilityQuestion
 from app.domain.entities.linguistic_versatility_session import LinguisticVersatilitySession
 from app.domain.entities.linguistic_versatility_round import LinguisticVersatilityRound
+from app.domain.entities.pause_session import PauseSession
 
 __all__ = [
     "Role",
@@ -41,4 +42,5 @@ __all__ = [
     "LinguisticVersatilityQuestion",
     "LinguisticVersatilitySession",
     "LinguisticVersatilityRound",
+    "PauseSession",
 ]

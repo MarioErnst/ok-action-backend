@@ -40,6 +40,28 @@ _MUL_DET_SCHEMA = {
     "required": ["w", "n", "ctx"],
 }
 
+_PAUSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sc": {"type": "number"},
+        "total_pauses": {"type": "integer"},
+        "avg_pause_ms": {"type": "integer"},
+        "longest_pause_ms": {"type": "integer"},
+        "silence_ratio": {"type": "number"},
+        "classification": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": [
+        "sc",
+        "total_pauses",
+        "avg_pause_ms",
+        "longest_pause_ms",
+        "silence_ratio",
+        "classification",
+        "note",
+    ],
+}
+
 _PRECISION_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -78,6 +100,7 @@ _DIM_SCHEMAS: dict[str, dict] = {
         },
         "required": ["sc", "det"],
     },
+    "pause": _PAUSE_SCHEMA,
 }
 
 # Minimum PCM bytes to bother sending (0.2s at 16kHz / 16-bit = 6400 bytes)
@@ -118,7 +141,7 @@ async def analyze_audio_segment(
 
     Args:
         audio_bytes: Raw PCM bytes (16-bit, 16kHz, mono).
-        selected_dims: Dimensions to evaluate. Valid values: "pron", "acc", "mul".
+        selected_dims: Dimensions to evaluate. Valid values: "pron", "acc", "mul", "pause", "precision".
         prompt: System prompt built by prompt_builder.build_system_prompt().
     """
     if len(audio_bytes) < _MIN_AUDIO_BYTES:
