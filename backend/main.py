@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.infrastructure.db.session import check_db_connection, dispose_connector
 from app.presentation.routers.accentuation import router as accentuation_router
 from app.presentation.routers.auth import router as auth_router
+from app.presentation.routers.consistency import router as consistency_router
 from app.presentation.routers.loudness import router as loudness_router
 from app.presentation.routers.phonation import router as phonation_router
 from app.presentation.routers.pronunciation import router as pronunciation_router
@@ -48,6 +49,7 @@ app.include_router(precision_router)
 app.include_router(live_session_router)
 app.include_router(facial_expression_router)
 app.include_router(linguistic_versatility_router)
+app.include_router(consistency_router)
 
 
 @app.get("/health")

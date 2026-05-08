@@ -45,7 +45,7 @@ Enviado inmediatamente al abrir la conexión. El servidor espera máximo 10 segu
 }
 ```
 
-Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas), `"precision"` (Q&A guiado, ver más abajo) y `"lex"` (versatilidad lingüística — analizada al cierre). Se puede enviar cualquier subconjunto. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
+Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas), `"precision"` (Q&A guiado, ver más abajo), `"lex"` (versatilidad lingüística — analizada al cierre) y `"consistency"` (estabilidad de ritmo, volumen, claridad, foco, seguridad y estructura). Se puede enviar cualquier subconjunto. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
 
 #### Comportamiento de `lex` (versatilidad)
 
@@ -287,5 +287,5 @@ El token se valida en `_authenticate_ws()` antes de procesar cualquier mensaje. 
 - **Máximo 3 errores acumulados:** `MAX_ERRORS = 3`. El conteo incluye errores de todas las dimensiones en todos los ciclos. Un ciclo con 2 errores de pronunciación y 1 de acentuación suma 3 y termina la sesión.
 - **Puntaje mínimo de 70:** `MIN_SCORE = 70`. Cualquier dimensión con `sc < 70` en un solo ciclo termina la sesión. Este umbral es estricto por diseño: el objetivo es que el usuario mantenga calidad consistente, no que promedia bien.
 - **Formato de audio:** el cliente debe enviar PCM crudo de 16 bits, 16 kHz, monocanal. Otros formatos o tasas de muestreo producirán análisis incorrectos sin error explícito del servidor.
-- **Dimensiones válidas:** `"pron"`, `"acc"`, `"mul"`. El servidor rechaza la sesión si se envía cualquier otro valor.
+- **Dimensiones válidas:** `"pron"`, `"acc"`, `"mul"`, `"precision"`, `"lex"` y `"consistency"`. El servidor rechaza la sesión si se envía cualquier otro valor.
 - **Concurrencia:** cada conexión WebSocket crea su propia instancia de `GeminiLiveService` y `LiveSessionState`. No existe estado compartido entre sesiones.

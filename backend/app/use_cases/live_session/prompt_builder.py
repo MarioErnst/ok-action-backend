@@ -25,6 +25,13 @@ _DIM_ANALYSIS_SECTIONS = {
         "Para cada muletilla detectada incluye en 'ctx' un fragmento breve (maximo 10 palabras) "
         "de la transcripcion que muestre el contexto donde aparecio."
     ),
+    "consistency": (
+        "- CONSISTENCIA: Evalua si el desempeno del hablante se mantiene estable en el segmento actual. "
+        "Mide ritmo, volumen, claridad, foco, seguridad y estructura. "
+        "No evalua si la respuesta es perfecta, sino si la calidad se sostiene sin cambios bruscos. "
+        "Devuelve sc (0-100), classification, rhythm, volume, clarity, focus, confidence, structure, "
+        "note y det. En det incluye solo eventos claros de variacion: area, severity y note."
+    ),
 }
 
 
@@ -34,7 +41,7 @@ def build_system_prompt(selected_dims: list[str]) -> str:
     Only includes instructions for the selected dimensions.
 
     Args:
-        selected_dims: List of dimension keys to include. Valid values: "pron", "acc", "mul", "precision".
+        selected_dims: List of dimension keys to include.
 
     Returns:
         A formatted prompt string with analysis instructions for the requested dimensions.

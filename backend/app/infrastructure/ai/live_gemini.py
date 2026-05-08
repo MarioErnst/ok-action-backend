@@ -40,6 +40,16 @@ _MUL_DET_SCHEMA = {
     "required": ["w", "n", "ctx"],
 }
 
+_CONSISTENCY_DET_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "area": {"type": "string"},
+        "severity": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": ["area", "severity", "note"],
+}
+
 _PRECISION_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -77,6 +87,33 @@ _DIM_SCHEMAS: dict[str, dict] = {
             "det": {"type": "array", "items": _MUL_DET_SCHEMA},
         },
         "required": ["sc", "det"],
+    },
+    "consistency": {
+        "type": "object",
+        "properties": {
+            "sc": {"type": "number"},
+            "classification": {"type": "string"},
+            "rhythm": {"type": "number"},
+            "volume": {"type": "number"},
+            "clarity": {"type": "number"},
+            "focus": {"type": "number"},
+            "confidence": {"type": "number"},
+            "structure": {"type": "number"},
+            "note": {"type": "string"},
+            "det": {"type": "array", "items": _CONSISTENCY_DET_SCHEMA},
+        },
+        "required": [
+            "sc",
+            "classification",
+            "rhythm",
+            "volume",
+            "clarity",
+            "focus",
+            "confidence",
+            "structure",
+            "note",
+            "det",
+        ],
     },
 }
 
