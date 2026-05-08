@@ -14,6 +14,7 @@ Esta carpeta contiene la documentación técnica del backend de OK Action. Sirve
 | Volumen | [modulos/volumen.md](modulos/volumen.md) |
 | Muletillas | [modulos/muletillas.md](modulos/muletillas.md) |
 | Pausas | [modulos/pausas.md](modulos/pausas.md) |
+| Fluidez | [modulos/fluidez.md](modulos/fluidez.md) |
 
 ## Convenciones
 

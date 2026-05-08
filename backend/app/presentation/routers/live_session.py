@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/live", tags=["live-session"])
 
 ANALYSIS_INTERVAL_SECONDS = 5
-VALID_DIMS = {"pron", "acc", "mul", "precision", "lex", "pause"}
+VALID_DIMS = {"pron", "acc", "mul", "precision", "lex", "pause", "fluency"}
 
 # PCM constants at 16kHz 16-bit mono
 _QA_CALIBRATION_BYTES = 16000   # 500ms = 16000 bytes

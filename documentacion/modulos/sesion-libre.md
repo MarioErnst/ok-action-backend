@@ -2,7 +2,7 @@
 
 ## Qué hace el módulo
 
-El módulo de Sesión Libre permite al usuario hablar libremente en español mientras el sistema analiza su habla en tiempo real. El análisis cubre dimensiones seleccionables: pronunciación, acentuación, muletillas, pausas, precisión y versatilidad lingüística. El usuario recibe retroalimentación periódica cada 5 segundos mientras habla, y la sesión termina cuando se alcanza alguna condición de parada (error acumulado, puntuación baja, tiempo límite o cierre voluntario).
+El módulo de Sesión Libre permite al usuario hablar libremente en español mientras el sistema analiza su habla en tiempo real. El análisis cubre dimensiones seleccionables: pronunciación, acentuación, muletillas, pausas, fluidez, precisión y versatilidad lingüística. El usuario recibe retroalimentación periódica cada 5 segundos mientras habla, y la sesión termina cuando se alcanza alguna condición de parada (error acumulado, puntuación baja, tiempo límite o cierre voluntario).
 
 El módulo resuelve el problema de evaluar habla espontánea sin guión, a diferencia de las sesiones guiadas donde el usuario lee un texto predefinido. El flujo es: el cliente envía audio PCM en tiempo real vía WebSocket, el servidor lo reenvía a Gemini Live API y dispara análisis cada 5 segundos, y el servidor evalúa umbrales para decidir si continuar o terminar.
 
@@ -41,11 +41,11 @@ Enviado inmediatamente al abrir la conexión. El servidor espera máximo 10 segu
 ```json
 {
   "type": "start",
-  "dims": ["pron", "acc", "mul", "pause"]
+  "dims": ["pron", "acc", "mul", "pause", "fluency"]
 }
 ```
 
-Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas), `"pause"` (pausas), `"precision"` (Q&A guiado, ver más abajo) y `"lex"` (versatilidad lingüística — analizada al cierre). Se puede enviar cualquier subconjunto. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
+Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas), `"pause"` (pausas), `"fluency"` (fluidez), `"precision"` (Q&A guiado, ver más abajo) y `"lex"` (versatilidad lingüística — analizada al cierre). Se puede enviar cualquier subconjunto. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
 
 #### Comportamiento de `lex` (versatilidad)
 
@@ -85,6 +85,17 @@ Enviado cada 5 segundos mientras la sesión está activa.
         "silence_ratio": 0.18,
         "classification": "pausas adecuadas",
         "note": "Las pausas separan ideas sin cortar la fluidez."
+      },
+      "fluency": {
+        "sc": 84,
+        "classification": "fluidez_buena",
+        "wpm": 124,
+        "repetitions": 1,
+        "restarts": 0,
+        "long_blocks": 0,
+        "pace_feedback": "Ritmo estable.",
+        "note": "Mantiene continuidad, con una repetición menor.",
+        "det": [{ "w": "entonces", "n": 2, "ctx": "entonces entonces explicaba" }]
       }
     },
     "overall": 82,
@@ -289,6 +300,22 @@ Cuando el usuario selecciona la dimensión `"pause"`, la sesión libre analiza e
 
 Esta separación evita mezclar responsabilidades: la práctica dedicada de pausas mantiene su historial propio, mientras que sesión libre conserva sus análisis multidimensionales en el registro de la sesión.
 
+## Integración con Fluidez
+
+Cuando el usuario selecciona `"fluency"`, sesión libre analiza continuidad del habla espontánea como dimensión estándar del ciclo de 5 segundos.
+
+La respuesta de Gemini se almacena en `dims.fluency` e incluye:
+
+- `sc`: score de fluidez del segmento;
+- `classification`: clasificación cualitativa;
+- `wpm`: palabras por minuto estimadas;
+- `repetitions`, `restarts`, `long_blocks`: contadores de eventos;
+- `pace_feedback`: feedback de ritmo;
+- `note`: observación accionable;
+- `det`: trabas relevantes con `{w, n, ctx}`.
+
+La diferencia con el módulo standalone de Fluidez es que sesión libre no tiene una consigna específica. Por eso no evalúa `prompt_alignment_score`; solo continuidad, ritmo y trabas del habla espontánea.
+
 ---
 
 ## Decisiones de diseño
@@ -319,5 +346,5 @@ El token se valida en `_authenticate_ws()` antes de procesar cualquier mensaje. 
 - **Máximo 3 errores acumulados:** `MAX_ERRORS = 3`. El conteo incluye errores de todas las dimensiones en todos los ciclos. Un ciclo con 2 errores de pronunciación y 1 de acentuación suma 3 y termina la sesión.
 - **Puntaje mínimo de 70:** `MIN_SCORE = 70`. Cualquier dimensión con `sc < 70` en un solo ciclo termina la sesión. Este umbral es estricto por diseño: el objetivo es que el usuario mantenga calidad consistente, no que promedia bien.
 - **Formato de audio:** el cliente debe enviar PCM crudo de 16 bits, 16 kHz, monocanal. Otros formatos o tasas de muestreo producirán análisis incorrectos sin error explícito del servidor.
-- **Dimensiones válidas:** `"pron"`, `"acc"`, `"mul"`, `"pause"`, `"precision"` y `"lex"`. El servidor rechaza la sesión si se envía cualquier otro valor.
+- **Dimensiones válidas:** `"pron"`, `"acc"`, `"mul"`, `"pause"`, `"fluency"`, `"precision"` y `"lex"`. El servidor rechaza la sesión si se envía cualquier otro valor.
 - **Concurrencia:** cada conexión WebSocket crea su propia instancia de `GeminiLiveService` y `LiveSessionState`. No existe estado compartido entre sesiones.

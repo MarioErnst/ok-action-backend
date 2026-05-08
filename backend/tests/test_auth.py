@@ -48,6 +48,7 @@ async def test_login_success():
     assert "access_token" in data
     assert data["user"]["email"] == "test@okaction.local"
     assert data["user"]["full_name"] == "Usuario Demo"
+    assert data["user"]["is_active"] is True
     assert "id" in data["user"]
 
 

@@ -31,6 +31,14 @@ _DIM_ANALYSIS_SECTIONS = {
         "y demasiadas pausas que cortan la fluidez. Estima cantidad total, duracion promedio, pausa mas larga "
         "y porcentaje aproximado de silencio del segmento."
     ),
+    "fluency": (
+        "- FLUIDEZ: Evalua continuidad del habla espontanea. Detecta bloqueos, trabas, "
+        "repeticiones inmediatas, reinicios de frase y pausas largas que cortan una idea. "
+        "No penalices muletillas leves ni pausas naturales si no rompen la continuidad. "
+        "Estima palabras por minuto (wpm), ritmo, coherencia local y entrega una nota accionable. "
+        "Para cada traba relevante incluye en 'det' un objeto con w=palabra o fragmento, "
+        "n=ocurrencias y ctx=contexto breve."
+    ),
 }
 
 
@@ -40,7 +48,7 @@ def build_system_prompt(selected_dims: list[str]) -> str:
     Only includes instructions for the selected dimensions.
 
     Args:
-        selected_dims: List of dimension keys to include. Valid values: "pron", "acc", "mul", "precision", "pause".
+        selected_dims: List of dimension keys to include.
 
     Returns:
         A formatted prompt string with analysis instructions for the requested dimensions.
