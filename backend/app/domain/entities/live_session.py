@@ -22,6 +22,9 @@ class LiveSession(Base):
     total_errors: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     stop_reason: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Linguistic versatility analysis Gemini produces at session close when
+    # the 'lex' dimension was selected. NULL when lex was not requested.
+    lex_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
