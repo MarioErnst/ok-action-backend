@@ -45,7 +45,13 @@ Enviado inmediatamente al abrir la conexión. El servidor espera máximo 10 segu
 }
 ```
 
-Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas). Se puede enviar uno, dos o los tres. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
+Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas), `"precision"` (Q&A guiado, ver más abajo) y `"lex"` (versatilidad lingüística — analizada al cierre). Se puede enviar cualquier subconjunto. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
+
+#### Comportamiento de `lex` (versatilidad)
+
+A diferencia de las otras dimensiones que se evalúan cada 5 s sobre el chunk de audio reciente, `lex` **acumula la totalidad del audio de la sesión** en un buffer separado y lo envía a Gemini en una **única llamada** justo antes de cerrar la conexión. Razón: la versatilidad léxica (TTR / variedad de vocabulario) sobre 5 s de habla es estadísticamente ruidosa; medirla sobre el discurso completo da un valor estable.
+
+El resultado se entrega al cliente vía un mensaje `lex_result` (ver §6) **inmediatamente antes** del mensaje `session_ended`, garantizando que el cliente lo recibe en la misma conexión WebSocket. La integración usa el `GeminiVersatilityService` definido en el módulo de versatilidad lingüística.
 
 #### 2. Ready (servidor → cliente)
 
@@ -93,7 +99,25 @@ Enviado únicamente cuando se activa un umbral de parada por `low_score` o `erro
 
 El campo `dim` es `null` cuando `reason` es `"error_threshold"` (los errores no se atribuyen a una sola dimensión).
 
-#### 6. End voluntario (cliente → servidor)
+#### 6. Lex result (servidor → cliente)
+
+Enviado al cierre de la sesión **únicamente** cuando `lex` estaba en `dims`. Llega estrictamente antes de `session_ended` para que el cliente lo procese antes de transicionar al resumen.
+
+```json
+{
+  "type": "lex_result",
+  "data": {
+    "versatility_score": 78,
+    "vocabulary_richness": 2,
+    "feedback": "Variedad media. Repetiste 'cosa' tres veces; podrías usar 'asunto' o 'tema'.",
+    "audio_intelligible": true
+  }
+}
+```
+
+Si Gemini falla o el audio acumulado es muy corto/silencioso, el servidor omite el mensaje y guarda `lex_result = NULL` en la base de datos.
+
+#### 7. End voluntario (cliente → servidor)
 
 ```json
 { "type": "end" }
@@ -101,7 +125,7 @@ El campo `dim` es `null` cuando `reason` es `"error_threshold"` (los errores no 
 
 El cliente puede enviar este mensaje en cualquier momento para terminar la sesión.
 
-#### 7. Session ended (servidor → cliente)
+#### 8. Session ended (servidor → cliente)
 
 ```json
 {
