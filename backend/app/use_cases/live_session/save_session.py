@@ -28,6 +28,7 @@ async def save_live_session(
         total_errors=state.accumulated_errors,
         duration_seconds=state.elapsed_seconds(),
         stop_reason=state.stop_reason or "user_ended",
+        lex_result=state.lex_result,
     )
     db.add(record)
     try:

@@ -13,6 +13,9 @@ from app.presentation.routers.live_session import router as live_session_router
 from app.presentation.routers.muletillas import router as muletillas_router
 from app.presentation.routers.precision import router as precision_router
 from app.presentation.routers.facial_expression import router as facial_expression_router
+from app.presentation.routers.linguistic_versatility import (
+    router as linguistic_versatility_router,
+)
 from config import settings
 
 
@@ -44,6 +47,7 @@ app.include_router(muletillas_router)
 app.include_router(precision_router)
 app.include_router(live_session_router)
 app.include_router(facial_expression_router)
+app.include_router(linguistic_versatility_router)
 
 
 @app.get("/health")

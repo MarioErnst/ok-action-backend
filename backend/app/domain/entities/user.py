@@ -37,3 +37,6 @@ class User(Base):
     facial_expression_sessions: Mapped[list["FacialExpressionSession"]] = relationship(
         back_populates="user"
     )
+    linguistic_versatility_sessions: Mapped[list["LinguisticVersatilitySession"]] = relationship(
+        back_populates="user"
+    )

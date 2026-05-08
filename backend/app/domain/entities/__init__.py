@@ -15,6 +15,9 @@ from app.domain.entities.precision_session import PrecisionSession
 from app.domain.entities.precision_round import PrecisionRound
 from app.domain.entities.facial_expression_session import FacialExpressionSession
 from app.domain.entities.facial_expression_emotion_event import FacialExpressionEmotionEvent
+from app.domain.entities.linguistic_versatility_question import LinguisticVersatilityQuestion
+from app.domain.entities.linguistic_versatility_session import LinguisticVersatilitySession
+from app.domain.entities.linguistic_versatility_round import LinguisticVersatilityRound
 
 __all__ = [
     "Role",
@@ -35,4 +38,7 @@ __all__ = [
     "PrecisionRound",
     "FacialExpressionSession",
     "FacialExpressionEmotionEvent",
+    "LinguisticVersatilityQuestion",
+    "LinguisticVersatilitySession",
+    "LinguisticVersatilityRound",
 ]

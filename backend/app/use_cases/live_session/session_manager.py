@@ -16,6 +16,10 @@ class LiveSessionState:
     analyses: list[dict] = field(default_factory=list)
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     stop_reason: str | None = None
+    # Populated only when 'lex' is in selected_dims and the end-of-session
+    # versatility evaluation completes successfully. Persisted as-is in
+    # LiveSession.lex_result.
+    lex_result: dict | None = None
 
     # ClassVar prevents these from becoming dataclass fields (no accidental override at construction)
     MAX_DURATION_SEC: ClassVar[int] = 300
