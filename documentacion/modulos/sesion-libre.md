@@ -2,7 +2,7 @@
 
 ## Qué hace el módulo
 
-El módulo de Sesión Libre permite al usuario hablar libremente en español mientras el sistema analiza su habla en tiempo real. El análisis cubre hasta tres dimensiones: pronunciación, acentuación y muletillas. El usuario recibe retroalimentación periódica cada 5 segundos mientras habla, y la sesión termina cuando se alcanza alguna condición de parada (error acumulado, puntuación baja, tiempo límite o cierre voluntario).
+El módulo de Sesión Libre permite al usuario hablar libremente en español mientras el sistema analiza su habla en tiempo real. El análisis cubre dimensiones seleccionables: pronunciación, acentuación, muletillas, pausas y precisión. El usuario recibe retroalimentación periódica cada 5 segundos mientras habla, y la sesión termina cuando se alcanza alguna condición de parada (error acumulado, puntuación baja, tiempo límite o cierre voluntario).
 
 El módulo resuelve el problema de evaluar habla espontánea sin guión, a diferencia de las sesiones guiadas donde el usuario lee un texto predefinido. El flujo es: el cliente envía audio PCM en tiempo real vía WebSocket, el servidor lo reenvía a Gemini Live API y dispara análisis cada 5 segundos, y el servidor evalúa umbrales para decidir si continuar o terminar.
 
@@ -41,11 +41,11 @@ Enviado inmediatamente al abrir la conexión. El servidor espera máximo 10 segu
 ```json
 {
   "type": "start",
-  "dims": ["pron", "acc", "mul"]
+  "dims": ["pron", "acc", "mul", "pause"]
 }
 ```
 
-Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas). Se puede enviar uno, dos o los tres. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
+Valores válidos para `dims`: `"pron"` (pronunciación), `"acc"` (acentuación), `"mul"` (muletillas), `"pause"` (pausas) y `"precision"` (precisión). Se puede enviar una o varias dimensiones. Si `dims` está vacío o contiene un valor inválido, el servidor cierra con código `4003`.
 
 #### 2. Ready (servidor → cliente)
 
@@ -70,7 +70,16 @@ Enviado cada 5 segundos mientras la sesión está activa.
     "dims": {
       "pron": { "sc": 85, "err": [{ "ph": "/r/", "w": "pero", "fix": "vibración simple" }] },
       "acc": { "sc": 90, "err": [] },
-      "mul": { "sc": 70, "det": [{ "w": "o sea", "n": 3 }] }
+      "mul": { "sc": 70, "det": [{ "w": "o sea", "n": 3 }] },
+      "pause": {
+        "sc": 84,
+        "total_pauses": 3,
+        "avg_pause_ms": 760,
+        "longest_pause_ms": 1200,
+        "silence_ratio": 0.18,
+        "classification": "pausas adecuadas",
+        "note": "Las pausas separan ideas sin cortar la fluidez."
+      }
     },
     "overall": 82,
     "fb": "Buena pronunciación general, reduce el uso de muletillas."
@@ -235,6 +244,29 @@ La información de cada ciclo se acumula en memoria en `LiveSessionState.analyse
 
 ---
 
+## Integración con Pausas
+
+Cuando el usuario selecciona la dimensión `"pause"`, la sesión libre analiza el uso de silencios como una dimensión más del ciclo estándar. A diferencia de la modalidad normal de pausas (`/pauses`), este flujo no crea registros en `pause_sessions`; las métricas quedan guardadas dentro de `live_sessions.analyses`.
+
+### Comportamiento del flujo
+
+1. El frontend incluye `"pause"` en `dims` al iniciar el WebSocket.
+2. `VALID_DIMS` acepta la dimensión y `standard_dims` la envía al análisis periódico.
+3. `build_system_prompt()` agrega instrucciones para evaluar pausas sin tratarlas automáticamente como errores.
+4. `live_gemini.py` agrega el schema `dims.pause` con score, cantidad de pausas, promedio, pausa más larga, ratio de silencio, clasificación y nota.
+5. `LiveSessionState.evaluate_thresholds()` evalúa el score de pausas igual que las demás dimensiones. Si `sc < 70`, la sesión puede terminar con `reason = "low_score"` y `dim = "pause"`.
+
+### Diferencia con el módulo normal de pausas
+
+| Flujo | Cálculo | Persistencia |
+|---|---|---|
+| `/pausas` | Frontend calcula métricas desde frames de audio. | Tabla `pause_sessions`. |
+| Sesión libre con `"pause"` | Gemini estima métricas por segmento de audio. | JSONB en `live_sessions.analyses`. |
+
+Esta separación evita mezclar responsabilidades: la práctica dedicada de pausas mantiene su historial propio, mientras que sesión libre conserva sus análisis multidimensionales en el registro de la sesión.
+
+---
+
 ## Decisiones de diseño
 
 ### Timer de 5 segundos vs VAD nativo
@@ -263,5 +295,5 @@ El token se valida en `_authenticate_ws()` antes de procesar cualquier mensaje. 
 - **Máximo 3 errores acumulados:** `MAX_ERRORS = 3`. El conteo incluye errores de todas las dimensiones en todos los ciclos. Un ciclo con 2 errores de pronunciación y 1 de acentuación suma 3 y termina la sesión.
 - **Puntaje mínimo de 70:** `MIN_SCORE = 70`. Cualquier dimensión con `sc < 70` en un solo ciclo termina la sesión. Este umbral es estricto por diseño: el objetivo es que el usuario mantenga calidad consistente, no que promedia bien.
 - **Formato de audio:** el cliente debe enviar PCM crudo de 16 bits, 16 kHz, monocanal. Otros formatos o tasas de muestreo producirán análisis incorrectos sin error explícito del servidor.
-- **Dimensiones válidas:** `"pron"`, `"acc"`, `"mul"`. El servidor rechaza la sesión si se envía cualquier otro valor.
+- **Dimensiones válidas:** `"pron"`, `"acc"`, `"mul"`, `"pause"` y `"precision"`. El servidor rechaza la sesión si se envía cualquier otro valor.
 - **Concurrencia:** cada conexión WebSocket crea su propia instancia de `GeminiLiveService` y `LiveSessionState`. No existe estado compartido entre sesiones.
