@@ -39,7 +39,7 @@ def _build_detail(
         ended_at=session_row.ended_at,
         duration_ms=session_row.duration_ms,
         score=session_row.score,
-        status=session_row.status.value,
+        status=session_row.status,
         created_at=session_row.created_at,
         metrics=PhonationMetricsOutput.model_validate(metrics_row),
         exercises=[
@@ -78,7 +78,7 @@ async def list_sessions(
             ended_at=session_row.ended_at,
             duration_ms=session_row.duration_ms,
             score=session_row.score,
-            status=session_row.status.value,
+            status=session_row.status,
             avg_hz=float(metrics_row.avg_hz),
         )
         for session_row, metrics_row in rows
