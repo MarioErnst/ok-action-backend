@@ -65,6 +65,12 @@ async def create_phonation_session(
     await db.commit()
     await db.refresh(session_row)
     await db.refresh(metrics_row)
+
+    # Sort by enum definition order so this matches the order Postgres uses
+    # natively for the get endpoint (Postgres orders ENUM columns by the
+    # position in the type definition, not alphabetically).
+    enum_order = {member: index for index, member in enumerate(ExerciseTypeEnum)}
+    exercise_rows.sort(key=lambda row: enum_order[row.exercise_type])
     return session_row, metrics_row, exercise_rows
 
 
