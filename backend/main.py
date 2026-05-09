@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.infrastructure.db.session import check_db_connection, dispose_connector
 from app.presentation.routers.auth import router as auth_router
+from app.presentation.routers.phonation import router as phonation_router
 from config import settings
 
 
@@ -28,8 +29,9 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(phonation_router)
 
-# NOTE: Other module routers (phonation, loudness, accentuation, pronunciation,
+# NOTE: Remaining module routers (loudness, accentuation, pronunciation,
 # muletillas, pauses, precision, linguistic_versatility, facial_expression,
 # fluency, consistency, live) are temporarily disabled. They are being rewritten
 # one by one against the new uniform sessions/<module>_metrics schema. Each
