@@ -31,6 +31,7 @@ class PhonationSessionCreate(BaseModel):
     score: int = Field(ge=0, le=100)
     metrics: PhonationMetricsInput
     exercises: list[PhonationExerciseInput] = Field(min_length=1)
+    parent_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "PhonationSessionCreate":

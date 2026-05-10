@@ -25,6 +25,7 @@ from app.use_cases.accentuation.sessions import (
     get_accentuation_session,
     list_accentuation_sessions,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 
 router = APIRouter(prefix="/accentuation", tags=["accentuation"])
 
@@ -96,9 +97,14 @@ async def create_session_endpoint(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> AccentuationSessionDetail:
-    session_row, metrics_row = await create_accentuation_session(
-        db=db, user=user, payload=payload
-    )
+    try:
+        session_row, metrics_row = await create_accentuation_session(
+            db=db, user=user, payload=payload
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
     return _build_detail(session_row, metrics_row)
 
 

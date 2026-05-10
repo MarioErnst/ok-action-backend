@@ -41,6 +41,7 @@ class PauseSessionCreate(BaseModel):
     ended_at: datetime
     score: int = Field(ge=0, le=100)
     metrics: PauseMetricsInput
+    parent_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_session_consistency(self) -> "PauseSessionCreate":

@@ -72,6 +72,7 @@ class MuletillasSessionCreate(BaseModel):
     started_at: datetime
     ended_at: datetime
     metrics: MuletillasMetricsInput
+    parent_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "MuletillasSessionCreate":

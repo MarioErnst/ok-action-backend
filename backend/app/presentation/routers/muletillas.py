@@ -22,6 +22,7 @@ from app.presentation.schemas.muletillas import (
     MuletillasSessionListItem,
     RandomQuestionResponse,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.muletillas.evaluate_response import (
     evaluate_response,
     get_random_question,
@@ -122,7 +123,7 @@ async def create_session_endpoint(
         session_row, metrics_row, word_rows = await create_muletillas_session(
             db=db, user=user, payload=payload
         )
-    except DuplicateMuletillaWordError as exc:
+    except (DuplicateMuletillaWordError, InvalidParentLiveError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),

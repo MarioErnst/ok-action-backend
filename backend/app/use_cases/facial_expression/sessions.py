@@ -14,6 +14,7 @@ from app.domain.entities.facial_expression_metrics import FacialExpressionMetric
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.presentation.schemas.facial_expression import FacialExpressionSessionCreate
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
 # Order matters: ties in the per-emotion percentages are broken in this order.
@@ -68,6 +69,9 @@ async def create_facial_expression_session(
     canonical scoring rule.
     """
 
+    if payload.parent_id is not None:
+        await validate_parent_live_session(db, user, payload.parent_id)
+
     duration_ms = int((payload.ended_at - payload.started_at).total_seconds() * 1000)
     top_emotion = _derive_top_emotion(payload)
     expressiveness = _derive_expressiveness_score(payload)
@@ -75,7 +79,7 @@ async def create_facial_expression_session(
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.facial_expression,
-        parent_id=None,
+        parent_id=payload.parent_id,
         started_at=payload.started_at,
         ended_at=payload.ended_at,
         duration_ms=duration_ms,

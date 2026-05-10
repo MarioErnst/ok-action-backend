@@ -27,6 +27,7 @@ from app.use_cases.loudness.presets import (
     list_presets,
     update_preset,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.loudness.sessions import (
     PresetNotAvailableError,
     create_loudness_session,
@@ -153,7 +154,7 @@ async def create_session_endpoint(
         session_row, metrics_row = await create_loudness_session(
             db=db, user=user, payload=payload
         )
-    except PresetNotAvailableError as exc:
+    except (PresetNotAvailableError, InvalidParentLiveError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),

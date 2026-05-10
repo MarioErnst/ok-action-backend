@@ -61,6 +61,7 @@ class FacialExpressionSessionCreate(BaseModel):
     started_at: datetime
     ended_at: datetime
     metrics: FacialExpressionMetricsInput
+    parent_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "FacialExpressionSessionCreate":

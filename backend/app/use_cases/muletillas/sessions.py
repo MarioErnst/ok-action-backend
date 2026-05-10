@@ -16,6 +16,7 @@ from app.domain.entities.muletillas_word_usage import MuletillasWordUsage
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.presentation.schemas.muletillas import MuletillasSessionCreate
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
 class DuplicateMuletillaWordError(Exception):
@@ -73,6 +74,9 @@ async def create_muletillas_session(
             )
         )
 
+    if payload.parent_id is not None:
+        await validate_parent_live_session(db, user, payload.parent_id)
+
     duration_ms = int((payload.ended_at - payload.started_at).total_seconds() * 1000)
     muletillas_count = sum(count for _, count, _ in normalized_words)
     score = payload.metrics.fluency_score
@@ -80,7 +84,7 @@ async def create_muletillas_session(
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.muletillas,
-        parent_id=None,
+        parent_id=payload.parent_id,
         started_at=payload.started_at,
         ended_at=payload.ended_at,
         duration_ms=duration_ms,

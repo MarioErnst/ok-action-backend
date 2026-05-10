@@ -76,6 +76,7 @@ class LoudnessSessionCreate(BaseModel):
     started_at: datetime
     ended_at: datetime
     metrics: LoudnessMetricsInput
+    parent_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "LoudnessSessionCreate":

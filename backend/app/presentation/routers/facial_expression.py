@@ -21,6 +21,7 @@ from app.use_cases.facial_expression.sessions import (
     get_facial_expression_session,
     list_facial_expression_sessions,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 
 router = APIRouter(prefix="/facial-expression", tags=["facial-expression"])
 
@@ -51,9 +52,14 @@ async def create_session_endpoint(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> FacialExpressionSessionDetail:
-    session_row, metrics_row = await create_facial_expression_session(
-        db=db, user=user, payload=payload
-    )
+    try:
+        session_row, metrics_row = await create_facial_expression_session(
+            db=db, user=user, payload=payload
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
     return _build_detail(session_row, metrics_row)
 
 

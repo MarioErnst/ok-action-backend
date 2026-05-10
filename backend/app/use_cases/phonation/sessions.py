@@ -11,6 +11,7 @@ from app.domain.entities.phonation_session_exercise import PhonationSessionExerc
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.presentation.schemas.phonation import PhonationSessionCreate
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
 async def create_phonation_session(
@@ -25,12 +26,15 @@ async def create_phonation_session(
     from started_at/ended_at to avoid trusting client-side derived values.
     """
 
+    if payload.parent_id is not None:
+        await validate_parent_live_session(db, user, payload.parent_id)
+
     duration_ms = int((payload.ended_at - payload.started_at).total_seconds() * 1000)
 
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.phonation,
-        parent_id=None,
+        parent_id=payload.parent_id,
         started_at=payload.started_at,
         ended_at=payload.ended_at,
         duration_ms=duration_ms,

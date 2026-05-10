@@ -56,6 +56,7 @@ class PronunciationSessionCreate(BaseModel):
     started_at: datetime
     ended_at: datetime
     metrics: PronunciationMetricsInput
+    parent_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "PronunciationSessionCreate":

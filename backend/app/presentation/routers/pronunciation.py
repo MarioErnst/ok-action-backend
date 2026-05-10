@@ -19,6 +19,7 @@ from app.presentation.schemas.pronunciation import (
     PronunciationSessionDetail,
     PronunciationSessionListItem,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.pronunciation.evaluate_phrase import evaluate_phrase
 from app.use_cases.pronunciation.sessions import (
     create_pronunciation_session,
@@ -97,9 +98,14 @@ async def create_session_endpoint(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> PronunciationSessionDetail:
-    session_row, metrics_row = await create_pronunciation_session(
-        db=db, user=user, payload=payload
-    )
+    try:
+        session_row, metrics_row = await create_pronunciation_session(
+            db=db, user=user, payload=payload
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
     return _build_detail(session_row, metrics_row)
 
 

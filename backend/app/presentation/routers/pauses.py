@@ -16,6 +16,7 @@ from app.presentation.schemas.pauses import (
     PauseSessionDetail,
     PauseSessionListItem,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.pauses.sessions import (
     create_pause_session,
     get_pause_session,
@@ -51,9 +52,14 @@ async def create_session_endpoint(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> PauseSessionDetail:
-    session_row, metrics_row = await create_pause_session(
-        db=db, user=user, payload=payload
-    )
+    try:
+        session_row, metrics_row = await create_pause_session(
+            db=db, user=user, payload=payload
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
     return _build_detail(session_row, metrics_row)
 
 

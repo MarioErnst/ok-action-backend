@@ -11,6 +11,7 @@ from app.domain.entities.loudness_preset import LoudnessPreset
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.presentation.schemas.loudness import LoudnessSessionCreate
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
 class PresetNotAvailableError(Exception):
@@ -59,13 +60,15 @@ async def create_loudness_session(
     """
 
     await _resolve_preset(db, user, payload.metrics.preset_id)
+    if payload.parent_id is not None:
+        await validate_parent_live_session(db, user, payload.parent_id)
 
     duration_ms = int((payload.ended_at - payload.started_at).total_seconds() * 1000)
 
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.loudness,
-        parent_id=None,
+        parent_id=payload.parent_id,
         started_at=payload.started_at,
         ended_at=payload.ended_at,
         duration_ms=duration_ms,

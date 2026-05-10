@@ -10,6 +10,7 @@ from app.domain.entities.pronunciation_metrics import PronunciationMetrics
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.presentation.schemas.pronunciation import PronunciationSessionCreate
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
 def _derive_overall_score(payload: PronunciationSessionCreate) -> int:
@@ -39,13 +40,16 @@ async def create_pronunciation_session(
     score from a single canonical formula).
     """
 
+    if payload.parent_id is not None:
+        await validate_parent_live_session(db, user, payload.parent_id)
+
     duration_ms = int((payload.ended_at - payload.started_at).total_seconds() * 1000)
     score = _derive_overall_score(payload)
 
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.pronunciation,
-        parent_id=None,
+        parent_id=payload.parent_id,
         started_at=payload.started_at,
         ended_at=payload.ended_at,
         duration_ms=duration_ms,

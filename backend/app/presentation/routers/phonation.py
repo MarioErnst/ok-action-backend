@@ -18,6 +18,7 @@ from app.presentation.schemas.phonation import (
     PhonationSessionDetail,
     PhonationSessionListItem,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.phonation.sessions import (
     create_phonation_session,
     get_phonation_session,
@@ -59,9 +60,14 @@ async def create_session(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> PhonationSessionDetail:
-    session_row, metrics_row, exercise_rows = await create_phonation_session(
-        db=db, user=user, payload=payload
-    )
+    try:
+        session_row, metrics_row, exercise_rows = await create_phonation_session(
+            db=db, user=user, payload=payload
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
     return _build_detail(session_row, metrics_row, exercise_rows)
 
 
