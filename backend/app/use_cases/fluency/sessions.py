@@ -69,8 +69,13 @@ async def persist_fluency_session(
     ended_at: datetime,
     status: SessionStatusEnum,
     analyses: list[dict],
+    parent_id: UUID | None = None,
 ) -> tuple[Session, FluencyMetrics] | None:
     """Insert one sessions row + 1:1 fluency_metrics row at WS close.
+
+    parent_id is taken from the WS start message and validated by the
+    router before this call (authentication and validation are router
+    concerns; the use_case trusts the value here).
 
     Returns None when there were no analyses to aggregate: an empty WS
     session (user opened the socket and disconnected without speaking) is
@@ -87,7 +92,7 @@ async def persist_fluency_session(
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.fluency,
-        parent_id=None,
+        parent_id=parent_id,
         started_at=started_at,
         ended_at=ended_at,
         duration_ms=duration_ms,

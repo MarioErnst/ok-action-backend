@@ -24,6 +24,10 @@ from app.domain.entities.user import User
 from app.infrastructure.ai.fluency_gemini import analyze_fluency_audio_segment
 from app.infrastructure.db.session import async_session_factory, get_session
 from app.infrastructure.security.dependencies import authenticate_ws, get_current_user
+from app.use_cases.live.sessions import (
+    InvalidParentLiveError,
+    validate_parent_live_session,
+)
 from app.presentation.schemas.fluency import (
     FluencyMetricsOutput,
     FluencySessionDetail,
@@ -120,6 +124,25 @@ async def fluency_session_ws(
         return
 
     prompt_text = str(start_msg.get("prompt_text") or "").strip()
+
+    # Validate parent_id if provided in the start message. We do it before
+    # sending "ready" so a bad parent_id closes the WS cleanly without the
+    # client thinking the session is live and starting to stream audio.
+    parent_id_raw = start_msg.get("parent_id")
+    parent_id: UUID | None = None
+    if parent_id_raw:
+        try:
+            parent_id = UUID(str(parent_id_raw))
+        except (ValueError, TypeError):
+            await ws.close(code=4003, reason="parent_id is not a valid UUID")
+            return
+        async with async_session_factory() as parent_db:
+            try:
+                await validate_parent_live_session(parent_db, user, parent_id)
+            except InvalidParentLiveError:
+                await ws.close(code=4003, reason="parent_id is not an active live session")
+                return
+
     state = FluencySessionState(user_id=str(user.id), prompt_text=prompt_text)
     prompt = build_fluency_prompt(prompt_text)
     stop_event = asyncio.Event()
@@ -207,6 +230,7 @@ async def fluency_session_ws(
                     ended_at=ended_at,
                     status=_stop_reason_to_status(state.stop_reason),
                     analyses=state.analyses,
+                    parent_id=parent_id,
                 )
                 if result is not None:
                     persisted_id = result[0].id

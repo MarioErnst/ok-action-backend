@@ -62,8 +62,13 @@ async def persist_consistency_session(
     ended_at: datetime,
     status: SessionStatusEnum,
     analysis: dict | None,
+    parent_id: UUID | None = None,
 ) -> tuple[Session, ConsistencyMetrics] | None:
     """Insert one sessions row + 1:1 consistency_metrics row at WS close.
+
+    parent_id is taken from the WS start message and validated by the
+    router before this call (authentication and validation are router
+    concerns; the use_case trusts the value here).
 
     Returns None when there was no Gemini analysis to persist (audio buffer
     was below the minimum or the Gemini call failed). The caller should
@@ -79,7 +84,7 @@ async def persist_consistency_session(
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.consistency,
-        parent_id=None,
+        parent_id=parent_id,
         started_at=started_at,
         ended_at=ended_at,
         duration_ms=duration_ms,
