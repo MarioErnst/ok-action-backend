@@ -95,14 +95,75 @@ No hay tabla intermedia ni "ordering" persistido — el orden se infiere del `st
 - `POST /live/sessions` → 201 `StartSessionResponse`.
 - `POST /live/sessions/{id}/finalize` → 200 `FinalizeSessionResponse` / 404 / 409.
 - `PATCH /live/sessions/{id}/abandon` (body: `AbandonSessionRequest`) → 204 / 404 / 409 / 422 (stop_reason='completed').
+- `POST /live/sessions/{id}/audio-evaluation` → 200 `ComposedAudioEvaluationResponse` / 422 / 502.
 - `GET /live/sessions` → 200 lista todas las status.
 - `GET /live/sessions/{id}` → 200 / 404.
 
 Todos requieren Bearer JWT.
 
-## 7. Pendientes en el roadmap
+## 7. Endpoint de evaluación compuesta de audio
 
-- **Wiring de `parent_id` en los 11 módulos componentes**: hoy todos los `create_<modulo>_session` hardcodean `parent_id=None`. Para que la composición funcione end-to-end, cada uno debe aceptar `parent_id` opcional, validar que sea de una live `active` del mismo user, y persistir el hijo con esa referencia. ~9 módulos x ~30min = una vuelta entera; cada uno es un commit chico con patrón claro.
-- **Frontend**: actualizar el flujo "sesión libre" para usar el nuevo lifecycle HTTP (start → modules con parent_id → finalize/abandon) en lugar del viejo WebSocket multi-dim.
-- **Streaming multi-dim**: si se quiere re-introducir el análisis simultáneo de múltiples dimensiones sobre un mismo audio (feature del live viejo), implementar como módulo independiente que persista hijos con parent_id apuntando a la live actual. NO mezclar con este orquestador.
+`POST /live/sessions/{id}/audio-evaluation` agrupa la evaluación de hasta cuatro módulos sobre un único audio en una sola llamada a Gemini. Reemplaza el flujo viejo del WebSocket multi-dim sin reintroducir streaming: el cliente graba localmente con `MediaRecorder`, y al cierre envía el blob junto con la lista de módulos seleccionados.
+
+### Contrato
+
+Multipart `POST /live/sessions/{id}/audio-evaluation` con campos:
+
+| Campo | Tipo | Requerido | Descripción |
+|-------|------|-----------|-------------|
+| `audio` | UploadFile | sí | Blob del MediaRecorder (`audio/webm` en Chrome/Android, `audio/mp4` en iOS Safari). |
+| `modules` | repeated form (`modules=muletillas&modules=consistency`) | sí | Subconjunto no vacío de `{muletillas, accentuation, pronunciation, consistency}`. |
+| `started_at` | datetime ISO | sí | Timestamp del cliente cuando comenzó la captura. El backend confía porque sólo afecta a la duración propia del usuario. |
+| `prompt_text` | string | no | Consigna libre (opcional). Se incluye como contexto en el prompt compuesto. |
+
+Respuesta `200 ComposedAudioEvaluationResponse`:
+
+```json
+{
+  "audio_intelligible": true,
+  "children": [{ "id": "...", "module": "muletillas", "score": 78, ... }, ...],
+  "evaluation": { "audio_intelligible": true, "muletillas": {...}, ... }
+}
+```
+
+Códigos de error:
+- `422` si `modules` está vacío, contiene un módulo no componible, el `parent_id` no apunta a una live activa del usuario, o el audio viene vacío.
+- `502` si Gemini no respondió o devolvió JSON inválido (caller decide reintento o avisar al usuario).
+
+Cuando `audio_intelligible=false`, el endpoint responde `200` pero `children` es `[]` y no se persiste ningún hijo: la live sigue válida y `finalize` agregará score=NULL.
+
+### Flujo interno
+
+1. Validación de `modules` (no vacío, todos en la enum interna `ComposableModule`).
+2. `validate_parent_live_session(db, user, session_id)` → `InvalidParentLiveError` se mapea a 422.
+3. `audio.read()` y `mime_type = audio.content_type` (defaultea a `audio/webm`).
+4. `evaluate_composed_audio(audio_bytes, mime_type, modules, prompt_text)` arma prompt+schema dinámicos y llama a Gemini una sola vez.
+5. `persist_composed_evaluation(...)` crea N hijos `Session(module=<modulo>, parent_id=<live_id>, status='completed')` + sus filas `<modulo>_metrics` correspondientes. Si `audio_intelligible=false`, no persiste nada.
+6. Respuesta con la lista de hijos creados + el dict de Gemini para que el cliente renderice el summary sin GETs adicionales.
+
+### Capas
+
+| Archivo | Responsabilidad |
+|---------|-----------------|
+| `app/use_cases/live/composed/prompts.py` | Secciones de prompt por módulo + `build_composed_prompt`. |
+| `app/use_cases/live/composed/schemas.py` | Secciones de JSON schema por módulo + `build_composed_schema`. |
+| `app/use_cases/live/composed/persist.py` | Toma el dict de Gemini y persiste N hijos + métricas. |
+| `app/infrastructure/ai/composed_live_gemini.py` | Llama a Gemini con audio + prompt + schema unificados. |
+| `app/presentation/routers/live.py` | Endpoint multipart, validación, orquestación, respuesta. |
+
+### Decisiones de diseño
+
+- **Prompts y schemas separados por módulo**: cada uno expone su sección de prompt y su sección de JSON schema como constantes privadas. El composer arma dinámicamente la unión según los módulos seleccionados. Cambiar un criterio de un módulo no afecta a los otros.
+- **Orden determinístico**: tanto el prompt como el schema ordenan los módulos según `VALID_MODULES`, no según el orden del request. Inputs equivalentes producen prompts idénticos; útil para debugging y para cualquier futura cache de prompts.
+- **Versión "live" del prompt distinta de la standalone**: muletillas/consistency ya estaban diseñados para habla libre; accentuation y pronunciation se reformularon para evaluar habla libre sin frase target. La versión standalone (que sí pide phrase_text) sigue intacta. Las dos versiones cubren productos diferentes.
+- **Mismo formula de score que standalone**: `_muletillas_score`, `_accentuation_score`, etc., en `persist.py` replican la fórmula que cada módulo aplica en su flujo standalone. Una fila live de muletillas se ve igual que una standalone — mismo score, mismas columnas.
+- **`phrases_count=0` y `level='free'`** para accentuation/pronunciation en live: las columnas son NOT NULL en BD, así que no se pueden dejar nulas. `0` y `"free"` son los valores honestos para "habla libre, sin frases discretas evaluadas".
+- **Live finalize compatible sin cambios**: `_avg_completed_children_score` ya promediaba sobre hijos `completed` con `score IS NOT NULL`, así que cualquier hijo creado por el endpoint de audio-evaluation entra automáticamente al cálculo agregado.
+- **No mínimo de bytes**: dejar la decisión de "hay habla suficiente" a Gemini vía `audio_intelligible`. Distintos codecs tienen bitrates muy distintos, y un threshold fijo en bytes daría falsos negativos en algunas plataformas.
+- **`gemini_response` se devuelve crudo al cliente**: el frontend tiene la información rica (feedback, muletillas detectadas, etc.) sin GETs adicionales, pero todo lo no persistido es ephemeral. Si en el futuro se quiere historial detallado del feedback, hay que crear tablas para esos campos.
+
+## 8. Pendientes en el roadmap
+
+- **Streaming multi-dim**: si se quiere re-introducir el análisis simultáneo en tiempo real durante la grabación (feature del live viejo, eliminada con la migración), implementar como módulo separado encima del modelo de composición. No mezclar con el orquestador HTTP actual.
 - **`stop_reason` en otros módulos**: solo live_metrics tiene la columna. Si las analytics necesitan distinguir reasons en otros módulos (fluency time_limit vs disconnect, por ejemplo), agregar columna análoga.
+- **Tests del endpoint de audio-evaluation**: la suite actual cubre el lifecycle HTTP base (start/finalize/abandon/list/get). Falta cubrir el endpoint compuesto con un mock de Gemini para validar el parser y la persistencia de hijos sin quemar cuota.
