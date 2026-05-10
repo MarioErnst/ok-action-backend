@@ -1,311 +1,129 @@
 # Precisión — Documentación Backend
 
-## 1. Descripción general
+## 1. Descripción funcional
 
-El módulo de Precisión evalúa la capacidad del usuario para responder preguntas de forma directa, relevante y concisa en voz alta. Está orientado a la comunicación oral efectiva en contextos profesionales y cotidianos.
+El módulo de Precisión entrena al usuario a responder preguntas abiertas de forma **relevante**, **directa** y **concisa**. El flujo, a diferencia de otros módulos, es stateful con varios endpoints en secuencia:
 
-El flujo funcional es el siguiente:
+1. **Start**: el frontend pide una sesión con N rounds. El backend crea la sesión activa y selecciona N prompts del catálogo `prompts` filtrado por `module='precision'` y `is_active=true`.
+2. **Evaluate per round**: para cada round el frontend manda el audio + `round_index` + `prompt_id`. El backend llama a Gemini con el texto del prompt, persiste los scores y retorna el resultado con feedback ephemeral.
+3. **Finalize**: el frontend cierra la sesión. El backend agrega scores por dimensión, calcula `score` global como promedio de rounds inteligibles, y marca `status='completed'` con `ended_at` y `duration_ms`.
+4. **Abandon**: alternativa al finalize si el usuario interrumpe. Marca `status='aborted'` con `ended_at`.
 
-1. El usuario inicia una sesión de precisión. El sistema selecciona aleatoriamente una pregunta del banco fijo, evitando repetir preguntas recientes.
-2. El usuario graba su respuesta en audio.
-3. El backend envía el audio a Gemini AI, que evalúa tres dimensiones: `directness` (qué tan directa es la respuesta), `relevance` (qué tan pertinente es al tema preguntado) y `conciseness` (qué tan concisa y sin relleno innecesario).
-4. Si el audio es ininteligible, los scores quedan en `null` y se marca `audio_intelligible = false`.
-5. El sistema calcula un `overall_score` ponderado a partir de las tres dimensiones.
-6. Al finalizar la sesión, se persisten todos los resultados. El usuario puede consultar el historial de sesiones anteriores.
+## 2. Capas del módulo
 
-## 2. Entidades de dominio
+| Capa | Ubicación | Responsabilidad |
+|------|-----------|-----------------|
+| Router | `backend/app/presentation/routers/precision.py` | Endpoints HTTP del lifecycle, llamada a Gemini, mapeo de errores. |
+| Schemas | `backend/app/presentation/schemas/precision.py` | Contratos Pydantic v2 del request/response de cada paso. |
+| Use cases | `backend/app/use_cases/precision/sessions.py` | Lógica de negocio del lifecycle (start/evaluate/finalize/abandon/list/get). |
+| Infra AI | `backend/app/infrastructure/ai/precision_gemini.py` | Cliente Gemini (3-dim scoring + transcript + feedback). Schema ya devuelve INTEGER. |
+| Seed | `backend/app/infrastructure/db/seed.py` | Inserta 10 prompts de precision iniciales (idempotente). |
+| Entidades | `backend/app/domain/entities/session.py`, `precision_metrics.py`, `precision_round.py`, `prompt.py` | Modelo SQLAlchemy del esquema uniforme. |
 
-### PrecisionQuestion
+## 3. Modelo de datos
 
-Representa una pregunta del banco fijo. No se generan preguntas dinámicamente.
+Una sesión de precisión se representa con tres tipos de filas: `sessions` raíz, `precision_metrics` 1:1 y N filas en `precision_rounds`.
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la pregunta. |
-| `text` | TEXT | NOT NULL | Enunciado de la pregunta. |
-| `category` | VARCHAR(100) | nullable | Categoría temática de la pregunta (ej. "laboral", "personal"). |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Fecha de inserción del registro. |
+### `sessions` (raíz, compartida)
 
-**Tabla:** `precision_questions`
+Para precision standalone: `module='precision'`, `parent_id=NULL`. El `status` evoluciona `active` → (`completed`|`aborted`). Mientras `active`: `ended_at`, `duration_ms`, `score` son NULL.
 
-### PrecisionSession
+### `precision_metrics` (1:1 con `sessions`)
 
-Representa una sesión completa de evaluación de precisión iniciada por un usuario.
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `mode` | precision_mode_enum | NOT NULL DEFAULT `standalone` | `standalone` o `live` (cuando se rehaga el módulo `live`, las nested usarán este valor). |
+| `rounds_total` | INT | NOT NULL | Cantidad planeada al hacer start. |
+| `rounds_completed` | INT | NOT NULL DEFAULT 0 | Incrementa con cada `evaluate_round` exitoso. |
+| `relevance_score` | SMALLINT NULL | CHECK 0-100 | Promedio de rounds inteligibles. NULL hasta finalize. |
+| `directness_score` | SMALLINT NULL | CHECK 0-100 | Promedio de rounds inteligibles. NULL hasta finalize. |
+| `conciseness_score` | SMALLINT NULL | CHECK 0-100 | Promedio de rounds inteligibles. NULL hasta finalize. |
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la sesión. |
-| `user_id` | UUID | FK → users (CASCADE) | Usuario propietario de la sesión. |
-| `status` | VARCHAR(20) | NOT NULL | Estado de la sesión: `in_progress`, `completed`, `abandoned`. |
-| `overall_score` | NUMERIC(5,2) | nullable | Puntuación global calculada al finalizar (0-100). Null mientras está en curso. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Fecha y hora de creación. |
-| `finalized_at` | TIMESTAMPTZ | nullable | Fecha y hora de cierre de la sesión. |
+### `precision_rounds` (N:1 con `sessions`)
 
-**Tabla:** `precision_sessions`
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK compuesta + FK `sessions.id` ON DELETE CASCADE | Sesión a la que pertenece. |
+| `round_index` | SMALLINT | PK compuesta | Asignado por el cliente (0..N-1). |
+| `prompt_id` | UUID | NOT NULL FK `prompts.id` ON DELETE RESTRICT | El prompt usado en este round. RESTRICT impide borrar prompts referenciados. |
+| `score` | SMALLINT NULL | CHECK 0-100 | Overall del round. NULL si `is_audio_intelligible=false`. |
+| `relevance_score` | SMALLINT NULL | CHECK 0-100 | NULL si audio inintelegible. |
+| `directness_score` | SMALLINT NULL | CHECK 0-100 | NULL si audio inintelegible. |
+| `conciseness_score` | SMALLINT NULL | CHECK 0-100 | NULL si audio inintelegible. |
+| `is_audio_intelligible` | BOOLEAN | NOT NULL DEFAULT TRUE | Gemini decide; si false, scores son NULL. |
 
-**Relación:** Una sesión tiene uno o más `PrecisionRound` (relación 1:N).
+Índice `ix_precision_rounds_prompt ON prompt_id` para análisis longitudinal por pregunta.
 
-### PrecisionRound
+### Decisiones de diseño
 
-Representa una ronda individual dentro de una sesión: una pregunta y su respuesta evaluada.
+- **Lifecycle stateful**: precision no usa el patrón "submit completed session" porque el UX requiere mostrar score por round antes de avanzar al siguiente. Cada round implica una llamada Gemini sirviendo un audio del usuario.
+- **Catálogo `prompts`**: el viejo `precision_questions` se eliminó. Las preguntas ahora viven en `prompts` (`module='precision'`). 10 prompts iniciales se insertan vía `seed.py`.
+- **`prompt_id` con FK RESTRICT**: borrar un prompt referenciado por sesiones lo bloquea. Si quieres "deprecar" un prompt sin perder histórico, marca `is_active=false` (no aparecerá en futuras sesiones, pero los rounds antiguos siguen siendo válidos).
+- **`round_index` por cliente**: el frontend asigna round_index 0..N-1 según orden de prompts. Backend solo valida que la combinación `(session_id, round_index)` no duplique (composite PK lo enforza). No tracea qué prompt fue asignado a qué round; confía en que el cliente honre la asignación inicial. Riesgo bajo (usuario solo puede "elegir prompts más fáciles" para sí mismo, no impacta a terceros).
+- **Score per round derivado server-side**: `round(0.4*relevance + 0.3*directness + 0.3*conciseness)`. Pesos heredados del código viejo para no romper la percepción del usuario. Cambio centralizado en `_round_score`.
+- **Score per session derivado en finalize** = avg de rounds inteligibles. Sub-scores agregados (relevance/directness/conciseness en metrics) también promedios.
+- **Scores NULL si audio inintelegible**: el round queda persistido (incrementa `rounds_completed`) pero sin scores. Si TODOS los rounds resultan inintelegibles, finalize deja `score=NULL` en sessions y los 3 sub-scores agregados también NULL.
+- **Validación dual de `prompt_id`**: el router lo verifica primero (necesita el texto para Gemini, falla con 422 sin pegarle a Gemini si no existe). El use_case lo re-verifica como invariante de su propia responsabilidad. 2 queries baratas, separación limpia router-vs-use_case.
+- **Drops per JSON**: `transcript`, `noise_level`, `feedback`, `strengths`, `improvement_areas`, `question_text`, `audio_duration_secs`. Texto LLM, datos sin valor longitudinal, snapshot duplicado de catálogo.
+- **`abandon` idempotente**: llamar abandon sobre una sesión ya `aborted` es un no-op (frontend puede tocar el botón dos veces sin error). Llamar sobre `completed` falla con 409 (no se puede revertir).
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la ronda. |
-| `session_id` | UUID | FK → precision_sessions (CASCADE) | Sesión a la que pertenece. |
-| `question_id` | UUID | FK → precision_questions | Referencia a la pregunta del banco. |
-| `question_text` | TEXT | NOT NULL | Snapshot del texto de la pregunta en el momento de la ronda. |
-| `round_index` | INTEGER | NOT NULL | Índice ordinal de la ronda en la sesión (0-based). |
-| `directness` | NUMERIC(5,2) | nullable | Puntuación de directness (0-100). Null si audio ininteligible. |
-| `relevance` | NUMERIC(5,2) | nullable | Puntuación de relevance (0-100). Null si audio ininteligible. |
-| `conciseness` | NUMERIC(5,2) | nullable | Puntuación de conciseness (0-100). Null si audio ininteligible. |
-| `overall_score` | NUMERIC(5,2) | nullable | Puntuación ponderada de la ronda. Null si audio ininteligible. |
-| `audio_intelligible` | BOOLEAN | NOT NULL, DEFAULT true | Indica si Gemini pudo interpretar el audio. |
-| `strengths` | ARRAY(TEXT) | nullable | Lista de aspectos positivos detectados en la respuesta. |
-| `improvement_areas` | ARRAY(TEXT) | nullable | Lista de áreas de mejora detectadas. |
-| `feedback` | TEXT | nullable | Retroalimentación narrativa generada por Gemini. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Fecha y hora de evaluación. |
+## 4. Esquemas
 
-**Tabla:** `precision_rounds`
+### Start
 
-## 3. Casos de uso
+`StartSessionRequest`: `rounds_total` (1-20).
 
-### `start_precision_session(user, session)`
+`StartSessionResponse`: `session_id`, `started_at`, `rounds_total`, `prompts` (lista de `PromptOut` con id+text+category+difficulty).
 
-Inicia una nueva sesión de precisión para el usuario autenticado. Crea un registro `PrecisionSession` con `status = in_progress`. Selecciona aleatoriamente una pregunta del banco, excluyendo las preguntas usadas en las últimas sesiones del usuario para evitar repetición inmediata. Retorna la sesión creada junto con la primera pregunta.
+### Evaluate per round
 
-### `evaluate_precision_response(session_id, audio_bytes, mime_type, round_index, user, session)`
+Multipart Form (no es Pydantic, ver `EvaluateRoundRequestForm` como mirror documentación-only): `audio` (UploadFile), `round_index` (>=0), `prompt_id` (UUID).
 
-Recibe el audio de una respuesta y lo envía a `GeminiPrecisionService` para evaluación. Crea un `PrecisionRound` con los scores obtenidos. Si Gemini determina que el audio es ininteligible, persiste la ronda con `audio_intelligible = false` y todos los scores en `null`. Retorna el resultado de la ronda evaluada.
+`EvaluateRoundResponse`: `round_index`, `prompt_id`, `is_audio_intelligible`, `score?`, 3 `*_score?`, `transcript`, `feedback`, `strengths` (list), `improvement_areas` (list).
 
-### `finalize_precision_session(session_id, user, session)`
+### Finalize
 
-Cierra una sesión en curso. Calcula el `overall_score` de la sesión como promedio de los `overall_score` de las rondas completadas (ignorando rondas con audio ininteligible). Actualiza el `status` a `completed` y registra `finalized_at`. Retorna la sesión con el score final.
+`FinalizeSessionResponse`: `session_id`, `status` ("completed"), `score?`, `rounds_completed`, `rounds_total`, 3 `*_score?` agregados.
 
-### `abandon_precision_session(session_id, user, session)`
+### Detail / List
 
-Marca una sesión como `abandoned` sin calcular scores. Se usa cuando el usuario interrumpe el flujo antes de completar las rondas. Las rondas ya evaluadas quedan registradas pero no se computan en el score de sesión.
+`PrecisionRoundOutput`: round_index, prompt_id, score?, 3 sub-scores?, is_audio_intelligible.
 
-### `get_precision_session(session_id, user, session)`
+`PrecisionMetricsOutput`: mode, rounds_total, rounds_completed, 3 *_score?.
 
-Carga una sesión con todos sus `PrecisionRound` asociados usando `selectinload`. Valida que `user_id` coincida con el usuario autenticado antes de devolver el resultado. Retorna `403` si la sesión pertenece a otro usuario y `404` si no existe.
+`PrecisionSessionDetail`: id, user_id, started_at, ended_at?, duration_ms?, score?, status, created_at, metrics, rounds.
 
-### `get_precision_history(user, session)`
+`PrecisionSessionListItem`: id, started_at, ended_at?, duration_ms?, score?, status, rounds_total, rounds_completed.
 
-Consulta las sesiones completadas del usuario, ordenadas por `created_at` descendente. Solo incluye sesiones con `status = completed`. Retorna una lista compacta con `id`, `overall_score` y `created_at`.
+## 5. Casos de uso (`sessions.py`)
 
-## 4. Endpoints
+- `start_precision_session(db, user, rounds_total)`: crea sesión activa + metrics; selecciona N prompts random del catálogo. Si la cantidad disponible < rounds_total, lanza `NotEnoughPromptsError` → router 503.
+- `evaluate_round(db, user, session_id, round_index, prompt_id, gemini_evaluation)`: valida sesión activa + prompt válido, persiste round con scores derivados. Lanza `SessionNotFoundError`/`SessionNotActiveError`/`PromptNotAvailableError` → router 404/409/422.
+- `finalize_precision_session(db, user, session_id)`: agrega scores, marca completed, computa duration_ms.
+- `abandon_precision_session(db, user, session_id)`: marca aborted; idempotente sobre aborted, falla sobre completed.
+- `list_precision_sessions(db, user)`: timeline incluyendo todas las status (active/completed/aborted), filtrando `parent_id IS NULL`.
+- `get_precision_session(db, user, session_id)`: detalle. None para no-encontrado o cross-user → router 404.
 
-### POST `/precision/sessions`
+### Helpers privados
 
-Inicia una nueva sesión de precisión.
+- `_round_score(rel, dir, con) -> int`: fórmula `round(0.4*rel + 0.3*dir + 0.3*con)`.
+- `_load_active_session(db, user, session_id) -> (Session, PrecisionMetrics)`: carga + valida ownership + status, lanza excepciones tipadas.
 
-- **Método:** POST — **Código:** 201 Created
-- **Autenticación:** Bearer token requerido
-- **Body:** vacío (no requiere parámetros)
-- **Respuesta:** objeto con `session_id`, `status`, `question` (id y texto de la primera pregunta), `created_at`
+## 6. Endpoints
 
----
+- `POST /precision/sessions` → 201 `StartSessionResponse` / 503 (catálogo insuficiente).
+- `POST /precision/sessions/{session_id}/rounds` — multipart audio + round_index + prompt_id. → 200 `EvaluateRoundResponse` / 404 (sesión) / 409 (no activa) / 422 (prompt inválido) / 502 (Gemini).
+- `POST /precision/sessions/{session_id}/finalize` → 200 `FinalizeSessionResponse` / 404 / 409.
+- `PATCH /precision/sessions/{session_id}/abandon` → 204 / 404 / 409.
+- `GET /precision/sessions` → 200 lista con todos los status.
+- `GET /precision/sessions/{id}` → 200 / 404.
 
-### POST `/precision/sessions/{session_id}/rounds`
+Todos los endpoints requieren Bearer JWT.
 
-Envía el audio de una respuesta para evaluación dentro de una sesión activa.
+## 7. Pendientes en el roadmap
 
-- **Método:** POST — **Código:** 200 OK
-- **Content-Type:** multipart/form-data
-- **Parámetros de ruta:** `session_id` (UUID)
-- **Parámetros de formulario:** `audio` (archivo), `round_index` (integer)
-- **Respuesta:** objeto `PrecisionRound` con scores, `audio_intelligible`, `strengths`, `improvement_areas`, `feedback`
-
----
-
-### POST `/precision/sessions/{session_id}/finalize`
-
-Finaliza una sesión activa y calcula el score consolidado.
-
-- **Método:** POST — **Código:** 200 OK
-- **Parámetros de ruta:** `session_id` (UUID)
-- **Body:** vacío
-- **Respuesta:** sesión completa con `overall_score`, `status = completed`, `finalized_at` y lista de rondas
-
----
-
-### PATCH `/precision/sessions/{session_id}/abandon`
-
-Abandona una sesión sin calcular resultados.
-
-- **Método:** PATCH — **Código:** 200 OK
-- **Parámetros de ruta:** `session_id` (UUID)
-- **Body:** vacío
-- **Respuesta:** sesión con `status = abandoned`
-
----
-
-### GET `/precision/sessions/{session_id}`
-
-Retorna los detalles completos de una sesión específica con todas sus rondas.
-
-- **Método:** GET — **Código:** 200 OK
-- **Parámetros de ruta:** `session_id` (UUID)
-- **Respuesta:** sesión con lista completa de `PrecisionRound`
-- **Errores:** `403` si la sesión no pertenece al usuario; `404` si no existe
-
----
-
-### GET `/precision/history`
-
-Lista las sesiones completadas del usuario autenticado.
-
-- **Método:** GET — **Código:** 200 OK
-- **Respuesta:** lista de objetos con `id`, `overall_score`, `created_at`, ordenada descendentemente por fecha
-
-## 5. Servicio Gemini
-
-### `GeminiPrecisionService`
-
-**Ubicación:** `backend/app/infrastructure/ai/precision_gemini.py`
-
-**Modelo:** `gemini-2.5-flash`
-
-**Responsabilidad:** recibir el audio de la respuesta del usuario junto con el texto de la pregunta, y retornar un objeto JSON con las tres dimensiones de evaluación más metadatos de feedback.
-
-**Parámetros de entrada:**
-
-| Parámetro | Tipo | Descripción |
-|-----------|------|-------------|
-| `audio_bytes` | bytes | Contenido binario del archivo de audio. |
-| `mime_type` | str | Tipo MIME del audio: webm, mp4, ogg, wav, mpeg. |
-| `question_text` | str | Texto exacto de la pregunta que el usuario respondió. |
-
-**Esquema de respuesta JSON:**
-
-```json
-{
-  "audio_intelligible": true,
-  "directness": 80,
-  "relevance": 75,
-  "conciseness": 70,
-  "strengths": ["Respuesta clara desde el inicio", "Sin rodeos innecesarios"],
-  "improvement_areas": ["Podría ser más concisa en la segunda parte"],
-  "feedback": "La respuesta aborda el tema de forma directa. Se sugiere eliminar repeticiones en la segunda mitad para ganar concisión."
-}
-```
-
-Si `audio_intelligible` es `false`, los campos `directness`, `relevance`, `conciseness`, `strengths` e `improvement_areas` se omiten o quedan en `null`. Solo se incluye `feedback` con una indicación de que el audio no pudo procesarse.
-
-**Prompt template:** El prompt instruye a Gemini a actuar como evaluador de comunicación oral efectiva en español. Se le proporciona la pregunta original y se le pide que evalúe únicamente la pertinencia, dirección y economía del lenguaje de la respuesta, sin considerar acento, pronunciación ni ruido de fondo.
-
-**Por qué no se penaliza el ruido de fondo:** el ruido ambiental es un factor externo al hablante que no refleja su capacidad comunicativa. Penalizarlo introduciría varianza injusta según el entorno del usuario (transporte, oficina abierta, hogar). El módulo mide competencia discursiva, no calidad de grabación.
-
-## 6. Fórmula de scores
-
-### Overall score por ronda
-
-```
-overall = round(relevance * 0.4 + directness * 0.3 + conciseness * 0.3)
-```
-
-**Por qué `relevance` tiene mayor peso (0.4):** una respuesta puede ser directa y concisa pero completamente fuera de tema, lo que la hace inútil comunicativamente. La pertinencia al tema es la condición más crítica de una respuesta efectiva. Directness y conciseness son igualmente importantes entre sí, pero ambas subordinadas a que la respuesta sea relevante.
-
-### Overall score de sesión
-
-Se calcula como el promedio simple de los `overall_score` de todas las rondas con `audio_intelligible = true`. Las rondas ininteligibles no se incluyen en el cálculo para no penalizar al usuario por problemas técnicos ajenos a su desempeño.
-
-### Manejo de audio ininteligible
-
-Cuando Gemini devuelve `audio_intelligible = false`:
-
-- Los campos `directness`, `relevance`, `conciseness` y `overall_score` del `PrecisionRound` se persisten como `null`.
-- `audio_intelligible` se registra como `false`.
-- El `feedback` indica que el audio no pudo ser interpretado.
-- La ronda queda registrada pero se excluye del cálculo del score de sesión.
-
-## 7. Decisiones de diseño
-
-### Banco de preguntas fijo en lugar de generación dinámica con IA
-
-Las preguntas se almacenan en la tabla `precision_questions` y se seleccionan aleatoriamente en cada sesión. Se descartó la generación dinámica por Gemini por tres razones: (1) elimina latencia adicional al iniciar la sesión, (2) garantiza que todas las preguntas tengan una dificultad y estructura validadas manualmente, y (3) permite controlar el vocabulario y los temas para que sean apropiados al nivel del producto sin depender de la variabilidad del modelo generativo.
-
-### ARRAY(TEXT) en PostgreSQL para `strengths` e `improvement_areas`
-
-Se usa `ARRAY(Text)` de PostgreSQL en lugar de JSONB o una tabla separada porque la información es una lista plana de cadenas sin estructura anidada. ARRAY nativo es más simple de consultar (`ANY`, `unnest`) y más eficiente en almacenamiento que JSONB para listas de strings. Una tabla separada habría agregado complejidad de joins innecesaria para datos que siempre se consumen junto con la ronda.
-
-### `question_text` como snapshot en PrecisionRound (no solo FK)
-
-Aunque `question_id` referencia la pregunta original en `precision_questions`, se almacena también `question_text` como copia en el momento de la ronda. Esto garantiza que el historial del usuario refleje exactamente el texto que vio cuando respondió, incluso si la pregunta es editada o eliminada del banco en el futuro. La FK sirve para trazabilidad; el snapshot sirve para integridad histórica.
-
-### Estrategia para no repetir preguntas recientes
-
-Al iniciar una sesión, el caso de uso consulta los `question_id` usados en las últimas N sesiones del usuario (donde N es configurable) y los excluye de la selección aleatoria. Si el banco tiene pocas preguntas y todas han sido usadas recientemente, el sistema selecciona igualmente de forma aleatoria sin restricción para evitar bloquear al usuario. Esta lógica vive en el caso de uso, no en la base de datos, para mantener la flexibilidad de ajustar N sin migraciones.
-
-## 8. Integración con Sesión Libre (Live Session)
-
-Cuando el usuario selecciona la dimensión `"precision"` en una sesión libre, el módulo de precisión se integra directamente con el WebSocket de la sesión libre. Este modo se denomina "modo Q&A" y opera de forma paralela al análisis continuo de las otras dimensiones.
-
-### Arquitectura del modo Q&A
-
-**Archivo:** `backend/app/presentation/routers/live_session.py`
-
-El router WebSocket ejecuta cuatro corrutinas en paralelo mediante `asyncio.gather`:
-- `stream_audio`: lee chunks binarios PCM y los distribuye al buffer principal y al buffer Q&A.
-- `analysis_timer`: analiza continuamente las dimensiones estándar (`pron`, `acc`, `mul`) cada 5 segundos. Se salta si no hay dimensiones estándar seleccionadas.
-- `session_limit_timer`: limita la duración total de la sesión.
-- `qa_mode`: maneja el ciclo de preguntas y respuestas de precisión (solo si `"precision"` está en los dims seleccionados).
-
-### Flujo del ciclo Q&A
-
-1. `qa_mode` llama a `start_precision_session(db, user_id, total_rounds=5, mode="live_session")`.
-2. Envía al frontend: `{"type": "question", "text": "...", "number": 1, "total": 5}`.
-3. Acumula los chunks PCM en `qa_buffer` (separado del `audio_buffer` de análisis continuo).
-4. **Calibración VAD**: los primeros 16000 bytes (~500ms a 16kHz 16-bit mono) se usan para calibrar el `SilenceDetector`. Esto establece el piso de ruido ambiental.
-5. **Detección de fin de respuesta**: se activa por dos vías:
-   - Silencio adaptativo: si `SilenceDetector.is_silence()` devuelve `True` durante 64000 bytes consecutivos (~2s), se considera que el usuario terminó de responder.
-   - Mensaje del frontend: `{"type": "answer_done"}` termina la respuesta inmediatamente.
-6. El audio acumulado se envía a Gemini via `analyze_audio_segment(audio_bytes, ["precision"], prompt)`.
-7. El resultado se persiste en `precision_rounds` y se actualiza `completed_rounds` en `precision_sessions`.
-8. Se envía al frontend: `{"type": "round_result", "number": N, "precision": {...}}` o `{"type": "round_unintelligible", "number": N}`.
-9. Se repite para cada pregunta. Al completar todas: `{"type": "session_complete"}`.
-
-### SilenceDetector (VAD adaptativo)
-
-**Archivo:** `backend/app/infrastructure/audio/silence_detector.py`
-
-`SilenceDetector` implementa detección de actividad de voz (VAD) adaptativa:
-- `calibrate(audio_chunk)`: establece el piso de ruido ambiental calculando el RMS de un chunk representativo del silencio del entorno.
-- `is_silence(audio_chunk)`: compara el RMS del chunk contra el umbral dinámico = `floor * 10^(12/20)` ≈ `floor * 3.98`. Los 12 dB de margen evitan falsos positivos por ruido de fondo sin ser tan estrictos que bloqueen el fin de respuesta.
-- Por defecto, antes de calibrar, el piso es 300 (conservador): la mayoría de audio real supera ese umbral, por lo que no se detecta silencio prematuramente.
-
-### Manejo de desconexión
-
-En el bloque `finally` de `qa_mode`, se llama a `abandon_precision_session(db, qa_session_id)`. Esta función solo abandona la sesión si su `status` es `"active"`. Si la sesión ya fue completada, la llamada no tiene efecto. Esto garantiza limpieza correcta tanto en desconexiones inesperadas como en flujos normales.
-
-### Mensajes WebSocket entre backend y frontend
-
-| Dirección | Tipo | Payload | Descripción |
-|---|---|---|---|
-| Backend → Frontend | `question` | `{text, number, total}` | Nueva pregunta para responder. |
-| Frontend → Backend | `answer_done` | — | El usuario indica que terminó de responder. |
-| Backend → Frontend | `round_result` | `{number, precision: {relevance, directness, conciseness, overall, feedback, audio_intelligible}}` | Resultado de la evaluación. |
-| Backend → Frontend | `round_unintelligible` | `{number}` | El audio no pudo evaluarse. |
-| Backend → Frontend | `session_complete` | — | Todas las preguntas respondidas. |
-| Backend → Frontend | `session_ended` | `{reason}` | WebSocket listo para cerrar (igual que en sesión estándar). |
-
-### Esquema de respuesta Gemini para precisión (modo live)
-
-La misma dimensión `"precision"` usa `_PRECISION_SCHEMA` en `live_gemini.py`. A diferencia de las otras dimensiones (`pron`, `acc`, `mul`) que se anidan bajo `"dims"`, `"precision"` se incluye como propiedad de primer nivel en la respuesta JSON. Esto evita mezclar su semántica (evaluación por pregunta) con el análisis continuo de habla.
-
-```json
-{
-  "dims": { ... },
-  "overall": 85,
-  "fb": "...",
-  "precision": {
-    "relevance": 80,
-    "directness": 75,
-    "conciseness": 90,
-    "overall": 82,
-    "feedback": "Respuesta directa.",
-    "audio_intelligible": true
-  }
-}
-```
+- **Composición en sesión live**: `start_precision_session` debe aceptar `mode='live'` cuando lo invoque el orquestador del módulo `live`, y la sesión debe asociarse vía `parent_id`. Hoy hardcoded a `standalone`.
+- **Anti-repetición de prompts**: el viejo código excluía los últimos N prompts vistos por el usuario. Reintroducir con un join sobre `precision_rounds` filtrado por sesiones recientes del usuario; deferred mientras el catálogo sea pequeño.
+- **MIME allowlist unificada**: igual que pronunciation/accentuation/muletillas, hoy fallback silencioso a webm.
+- **Cache efímera de feedback Gemini**: `transcript`/`feedback`/`strengths`/`improvement_areas` solo viven en la respuesta inmediata.

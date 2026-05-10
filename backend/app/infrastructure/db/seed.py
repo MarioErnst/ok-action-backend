@@ -12,8 +12,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session as OrmSession
 from google.cloud.sql.connector import Connector
 
-from app.domain.entities.role import Role
+from app.domain.entities.enums import ModuleEnum
 from app.domain.entities.loudness_preset import LoudnessPreset
+from app.domain.entities.prompt import Prompt
+from app.domain.entities.role import Role
 from app.domain.entities.user import User
 from app.infrastructure.security.hashing import hash_password
 from config import settings
@@ -88,6 +90,48 @@ def _seed_loudness_presets(session: OrmSession) -> None:
             print(f"Preset '{preset_data['label']}' already exists")
 
 
+def _seed_precision_prompts(session: OrmSession) -> None:
+    """Seed open-ended questions for the precision module.
+
+    Each prompt asks the user to answer a question directly so Gemini can
+    score relevance, directness and conciseness. Idempotent on (module, text).
+    """
+
+    prompts = [
+        "Cuéntame brevemente sobre tu mayor logro profesional.",
+        "¿Cuál ha sido el mayor desafío que has enfrentado en tu trabajo y cómo lo resolviste?",
+        "Describe una situación en la que tuviste que tomar una decisión difícil bajo presión.",
+        "¿Por qué deberíamos elegirte para este proyecto en lugar de otra persona?",
+        "Explica en una oración qué haces y a quién ayudas.",
+        "¿Cómo manejas el feedback negativo o las críticas constructivas?",
+        "Cuéntame un error reciente del que aprendiste algo importante.",
+        "¿Cuál es tu opinión sobre el trabajo remoto y por qué?",
+        "Describe el proyecto más complejo en el que hayas trabajado.",
+        "¿Qué habilidad te gustaría desarrollar en los próximos seis meses?",
+    ]
+    for text in prompts:
+        existing = session.execute(
+            select(Prompt).where(
+                Prompt.module == ModuleEnum.precision,
+                Prompt.text == text,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                Prompt(
+                    module=ModuleEnum.precision,
+                    text=text,
+                    category="general",
+                    difficulty="basic",
+                    language="es",
+                    is_active=True,
+                )
+            )
+            print(f"Precision prompt seeded: '{text[:50]}...'")
+        else:
+            print(f"Precision prompt already exists: '{text[:50]}...'")
+
+
 def _seed_dev_user(session: OrmSession, role: Role) -> None:
     if not settings.dev_user_email:
         return
@@ -117,6 +161,7 @@ def seed() -> None:
     with OrmSession(engine) as session:
         role = _seed_role(session)
         _seed_loudness_presets(session)
+        _seed_precision_prompts(session)
         _seed_dev_user(session, role)
         session.commit()
         print("Seed completed")
