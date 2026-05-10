@@ -140,6 +140,36 @@ async def evaluate_round_endpoint(
     audio_bytes = await audio.read()
     mime_type = audio.content_type or "audio/webm"
 
+    # Look up the session mode up front so a guided/free pairing mismatch
+    # fails with 422 before we burn a Gemini call. The use_case re-validates
+    # the same invariants once the round persists.
+    mode_row = (
+        await db.execute(
+            select(LinguisticVersatilityMetrics.mode)
+            .join(Session, Session.id == LinguisticVersatilityMetrics.session_id)
+            .where(
+                Session.id == session_id,
+                Session.module == ModuleEnum.linguistic_versatility,
+                Session.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if mode_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de versatilidad no encontrada",
+        )
+    if mode_row == LinguisticVersatilityModeEnum.guided and prompt_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="prompt_id is required in guided mode",
+        )
+    if mode_row == LinguisticVersatilityModeEnum.free and prompt_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="prompt_id must be omitted in free mode",
+        )
+
     prompt_text: str | None = None
     if prompt_id is not None:
         prompt_row = (
