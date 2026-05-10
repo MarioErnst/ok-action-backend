@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities.enums import (
@@ -32,6 +33,14 @@ class PromptNotAvailableError(Exception):
 
 class NotEnoughPromptsError(Exception):
     """Catalog has fewer active precision prompts than rounds_total."""
+
+
+class RoundIndexOutOfRangeError(Exception):
+    """round_index is outside [0, rounds_total) for the session."""
+
+
+class RoundAlreadyEvaluatedError(Exception):
+    """Same round_index has already been persisted for this session."""
 
 
 def _round_score(relevance: int, directness: int, conciseness: int) -> int:
@@ -149,6 +158,11 @@ async def evaluate_round(
 
     session_row, metrics_row = await _load_active_session(db, user, session_id)
 
+    if not (0 <= round_index < metrics_row.rounds_total):
+        raise RoundIndexOutOfRangeError(
+            f"round_index {round_index} outside [0, {metrics_row.rounds_total})"
+        )
+
     prompt_row = (
         await db.execute(
             select(Prompt).where(
@@ -186,7 +200,15 @@ async def evaluate_round(
 
     metrics_row.rounds_completed = metrics_row.rounds_completed + 1
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Composite PK (session_id, round_index) already exists, typically
+        # the frontend retried after the first request succeeded.
+        await db.rollback()
+        raise RoundAlreadyEvaluatedError(
+            f"round_index {round_index} already evaluated for session {session_id}"
+        ) from exc
     await db.refresh(round_row)
     await db.refresh(metrics_row)
     return round_row

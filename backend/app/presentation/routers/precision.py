@@ -40,6 +40,8 @@ from app.presentation.schemas.precision import (
 from app.use_cases.precision.sessions import (
     NotEnoughPromptsError,
     PromptNotAvailableError,
+    RoundAlreadyEvaluatedError,
+    RoundIndexOutOfRangeError,
     SessionNotActiveError,
     SessionNotFoundError,
     abandon_precision_session,
@@ -169,6 +171,14 @@ async def evaluate_round_endpoint(
     except SessionNotActiveError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+    except RoundAlreadyEvaluatedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+    except RoundIndexOutOfRangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         )
     except PromptNotAvailableError as exc:
         raise HTTPException(
