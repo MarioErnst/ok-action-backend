@@ -9,6 +9,7 @@ from app.presentation.routers.auth import router as auth_router
 from app.presentation.routers.loudness import router as loudness_router
 from app.presentation.routers.pauses import router as pauses_router
 from app.presentation.routers.phonation import router as phonation_router
+from app.presentation.routers.pronunciation import router as pronunciation_router
 from config import settings
 
 
@@ -36,12 +37,12 @@ app.include_router(phonation_router)
 app.include_router(loudness_router)
 app.include_router(pauses_router)
 app.include_router(accentuation_router)
+app.include_router(pronunciation_router)
 
-# NOTE: Remaining module routers (pronunciation, muletillas, precision,
-# linguistic_versatility, facial_expression, fluency, consistency, live)
-# are temporarily disabled. They are being rewritten one by one against the
-# new uniform sessions/<module>_metrics schema. Each rewritten module gets
-# its own commit that re-registers it here.
+# NOTE: Remaining module routers (muletillas, precision, linguistic_versatility,
+# facial_expression, fluency, consistency, live) are temporarily disabled. They
+# are being rewritten one by one against the new uniform sessions/<module>_metrics
+# schema. Each rewritten module gets its own commit that re-registers it here.
 
 
 @app.get("/health")

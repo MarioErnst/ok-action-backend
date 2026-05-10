@@ -2,235 +2,113 @@
 
 ## 1. Descripción funcional
 
-El módulo de Pronunciación permite a los usuarios evaluar y mejorar su pronunciación del español a través de grabaciones de audio. El flujo funcional es el siguiente:
+El módulo de Pronunciación entrena al usuario a articular fonemas del español con precisión. El flujo es estructuralmente igual al de acentuación:
 
-1. El usuario selecciona un nivel de dificultad: básico, intermedio o avanzado.
-2. Graba una serie de frases en voz alta, una por una.
-3. Cada grabación se envía al backend donde Gemini AI evalúa la pronunciación de forma fonética.
-4. Se registran métricas detalladas para cada frase: puntuaciones de vocales, consonantes, fluidez e inteligibilidad.
-5. Al finalizar todas las frases, se guarda la sesión completa con métricas consolidadas.
-6. El usuario puede consultar el historial de sesiones y revisar el feedback detallado de cada evaluación.
+1. El frontend muestra una frase y graba al usuario leyéndola.
+2. Cada frase grabada se envía al endpoint de evaluación, que llama a Gemini AI y retorna 5 puntuaciones (vocálica, consonántica, fluidez, inteligibilidad, overall) más feedback verbal y errores fonémicos específicos.
+3. El frontend agrega los resultados de todas las frases y los envía al endpoint de creación de sesión, indicando además el `level` de dificultad usado.
+4. El backend persiste solo las métricas agregadas y el nivel; el feedback verbal y los errores fonémicos se descartan tras mostrarlos en la UI.
 
 ## 2. Capas del módulo
 
-El módulo está organizado en capas según el patrón de arquitectura limpia:
-
 | Capa | Ubicación | Responsabilidad |
 |------|-----------|-----------------|
-| **Presentación** | `backend/app/presentation/routers/pronunciation.py` | Endpoints HTTP, gestión de rutas, validación de entrada. |
-| **Schemas** | `backend/app/presentation/schemas/pronunciation.py` | Modelos de datos para solicitud y respuesta (Pydantic). |
-| **Casos de uso** | `backend/app/use_cases/pronunciation/` | Lógica de negocio: evaluación de frases, guardado y consulta de sesiones. |
-| **Entidades** | `backend/app/domain/entities/` | Objetos de dominio: `PronunciationSession`, `PhrasePronunciation`. |
-| **Infraestructura (IA)** | `backend/app/infrastructure/ai/pronunciation_gemini.py` | Servicio `GeminiPronunciationService` que se comunica con Gemini AI. |
-
-Cada capa tiene una única responsabilidad y comunica con la siguiente mediante contratos bien definidos.
+| Router | `backend/app/presentation/routers/pronunciation.py` | Endpoints HTTP (evaluate + sessions CRUD), mapeo de errores. |
+| Schemas | `backend/app/presentation/schemas/pronunciation.py` | Contratos Pydantic v2 (per-frase efímero + sesión persistida). |
+| Use cases | `backend/app/use_cases/pronunciation/evaluate_phrase.py`, `sessions.py` | Llamada a Gemini con corte temprano por silencio + persistencia de sesiones. |
+| Infra AI | `backend/app/infrastructure/ai/pronunciation_gemini.py` | Cliente Gemini con prompt fonético-clínico y schema de respuesta. |
+| Infra audio | `backend/app/infrastructure/audio/silence_detector.py` | Detector de silencio (compartido con acentuación). |
+| Entidades | `backend/app/domain/entities/session.py`, `pronunciation_metrics.py` | Modelo SQLAlchemy del esquema uniforme. |
 
 ## 3. Modelo de datos
 
-### Tabla: `pronunciation_sessions`
+Una sesión de pronunciación se representa con dos filas: la raíz `sessions` y su 1:1 `pronunciation_metrics`. **No hay tabla hija**: las evaluaciones por frase son efímeras.
 
-Almacena información agregada de cada sesión de evaluación de pronunciación.
+### `sessions` (raíz, compartida)
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la sesión. |
-| `user_id` | UUID | FK → users (CASCADE) | Usuario propietario de la sesión. |
-| `level` | VARCHAR(20) | NOT NULL | Nivel de dificultad: 'basico', 'intermedio', 'avanzado'. |
-| `overall_score` | NUMERIC(5,2) | NOT NULL | Puntuación global consolidada (0-100). |
-| `vowel_score` | NUMERIC(5,2) | NOT NULL | Puntuación promedio de vocales (0-100). |
-| `consonant_score` | NUMERIC(5,2) | NOT NULL | Puntuación promedio de consonantes (0-100). |
-| `fluency_score` | NUMERIC(5,2) | NOT NULL | Puntuación promedio de fluidez (0-100). |
-| `intelligibility_score` | NUMERIC(5,2) | NOT NULL | Puntuación promedio de inteligibilidad (0-100). |
-| `summary_feedback` | TEXT | nullable | Retroalimentación general de la sesión. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Fecha y hora de creación. |
+Para pronunciación standalone: `module='pronunciation'`, `parent_id=NULL`, `status='completed'`. `score` lo deriva el backend.
 
-**Relación**: Una sesión tiene muchas `phrase_pronunciations` (relación 1:N).
+### `pronunciation_metrics` (1:1 con `sessions`)
 
-### Tabla: `phrase_pronunciations`
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `level` | VARCHAR(20) | NOT NULL | Nivel de dificultad usado en la sesión (string libre). |
+| `vowel_score` | SMALLINT | NOT NULL, CHECK 0-100 | Producción vocálica agregada. |
+| `consonant_score` | SMALLINT | NOT NULL, CHECK 0-100 | Producción consonántica agregada. |
+| `fluency_score` | SMALLINT | NOT NULL, CHECK 0-100 | Fluidez fonética agregada. |
+| `intelligibility_score` | SMALLINT | NOT NULL, CHECK 0-100 | Inteligibilidad agregada. |
+| `phrases_count` | INT | NOT NULL DEFAULT 0 | Cantidad de frases evaluadas. |
 
-Almacena evaluaciones detalladas de cada frase dentro de una sesión.
+### Decisiones de diseño
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la evaluación. |
-| `session_id` | UUID | FK → pronunciation_sessions (CASCADE) | Sesión a la que pertenece. |
-| `phrase_text` | VARCHAR(500) | NOT NULL | Texto de la frase evaluada. |
-| `phrase_index` | INTEGER | NOT NULL | Índice ordinal de la frase en la sesión (0-based). |
-| `overall_score` | NUMERIC(5,2) | NOT NULL | Puntuación global de la frase (0-100). |
-| `vowel_score` | NUMERIC(5,2) | NOT NULL | Puntuación de vocales (0-100). |
-| `consonant_score` | NUMERIC(5,2) | NOT NULL | Puntuación de consonantes (0-100). |
-| `fluency_score` | NUMERIC(5,2) | NOT NULL | Puntuación de fluidez (0-100). |
-| `intelligibility_score` | NUMERIC(5,2) | NOT NULL | Puntuación de inteligibilidad (0-100). |
-| `feedback` | TEXT | nullable | Retroalimentación detallada de la frase. |
-| `phoneme_errors` | JSONB | nullable | Array de objetos con errores de fonemas detectados. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Fecha y hora de evaluación. |
+- **Tabla hija `phrase_pronunciations` eliminada**: las evaluaciones por frase incluían `phrase_text`, `feedback`, `phoneme_errors` — todo texto generado por LLM sin valor longitudinal. El JSON propuesta lo dropeó explícitamente.
+- **`summary_feedback` eliminado**: mismo razonamiento.
+- **`score` derivado en backend = promedio redondeado de los 4 sub-scores** (vocálica, consonántica, fluidez, inteligibilidad). Sigue el precedente loudness/acentuación: cuando la fórmula del overall es canónica única, deriva en backend; si quieres ponderar (p.ej. dar más peso a inteligibilidad), cambia en `_derive_overall_score` en un solo lugar.
+- **`level` como string libre 1-20 chars**: el JSON propuesta usa VARCHAR(20) sin enum porque los niveles cambian con el contenido del catálogo (frontend define qué ofrece). Si alguna vez se requiere un set fijo de niveles, conviene migrar a enum nativo en BD y `Literal` en Pydantic.
+- **Schema Gemini con `"type": "integer"`** para los 5 score fields: garantiza que Gemini no devuelva floats que romperían la validación Pydantic int del lado del servidor. Lección importada del review post-commit de acentuación.
+- **`phrases_count >= 1`**: una sesión sin frases no tiene sentido.
+- **Sin whitelist explícita de MIME types**: igual que acentuación, se usa `audio.content_type or "audio/webm"` como default. Si el frontend manda algo raro Gemini se queja. Endurecer (mime allowlist + 415) queda como refactor unificado para ambos módulos.
 
-### Migración
+## 4. Esquemas
 
-Archivo: `backend/alembic/versions/428244644432_add_pronunciation_tables.py`
+### Evaluación por frase (efímera)
 
-Crea ambas tablas con restricciones de integridad referencial. La clave foránea usa `ON DELETE CASCADE` para garantizar que al eliminar una sesión se eliminen sus frases asociadas.
+`PhonemeError`: `phoneme`, `word`, `actual_issue`, `suggestion`. (Texto generado por Gemini.)
 
-## 4. Esquemas de solicitud y respuesta
+`PhraseEvaluation`: `phrase_text`, `phrase_index`, `overall_score` (0-100, ephemeral), `vowel_score`, `consonant_score`, `fluency_score`, `intelligibility_score` (todos 0-100), `feedback`, `phoneme_errors`.
 
-### `PhonemeErrorSchema`
+### Métricas persistidas
 
-Representa un error detectado en la pronunciación de un fonema específico.
+`PronunciationMetricsInput`: `level` (1-20 chars) + 4 sub-scores (0-100) + `phrases_count` (>=1).
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `phoneme` | str | Símbolo del fonema (ej. /r/, /ll/, /x/). |
-| `word` | str | Palabra en la que se detectó el error. |
-| `actual_issue` | str | Descripción del problema observado. |
-| `suggestion` | str | Recomendación para mejorar. |
+`PronunciationMetricsOutput`: mismos campos.
 
-### `PhrasePronunciationResponse`
+### Sesión
 
-Respuesta de evaluación de una frase individual.
+`PronunciationSessionCreate`: `started_at`, `ended_at`, `metrics`. **Sin `score`**: el backend lo deriva. Validador `validate_time_range` chequea `ended_at > started_at`.
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `phrase_text` | str | Texto de la frase evaluada. |
-| `phrase_index` | int | Índice ordinal en la sesión. |
-| `overall_score` | float | Puntuación global (0-100). |
-| `vowel_score` | float | Puntuación de vocales (0-100). |
-| `consonant_score` | float | Puntuación de consonantes (0-100). |
-| `fluency_score` | float | Puntuación de fluidez (0-100). |
-| `intelligibility_score` | float | Puntuación de inteligibilidad (0-100). |
-| `feedback` | str | Retroalimentación constructiva. |
-| `phoneme_errors` | list[PhonemeErrorSchema] | Lista de errores de fonemas detectados. |
+`PronunciationSessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`.
 
-### `PronunciationSessionRequest`
-
-Solicitud para guardar una sesión completa. Incluye los 5 scores consolidados, `level`, `summary_feedback` y la lista de evaluaciones de frases.
-
-### `PronunciationSessionResponse`
-
-Igual al request más `id` y `created_at`.
-
-### `PronunciationSessionListItem`
-
-Respuesta compacta para listados: `id`, `level`, `overall_score`, `created_at`.
+`PronunciationSessionListItem` (compacto): `id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `level`, `phrases_count`. Incluye `level` para que la card de timeline muestre con qué nivel se entrenó.
 
 ## 5. Casos de uso
 
-### `evaluate_phrase(audio_bytes, mime_type, phrase_text, level)`
+### `evaluate_phrase(audio_bytes, mime_type, phrase_text, level)` — `evaluate_phrase.py`
 
-Evalúa fonéticamente una frase individual a partir de un archivo de audio.
+1. Si el detector local de silencio marca el audio como vacío, retorna `_SILENCE_RESPONSE` (todos los scores en 0). Evita la llamada a Gemini.
+2. Si el detector falla, se loggea warning y se procede a Gemini.
+3. Llama a `GeminiPronunciationService.evaluate_phrase` y retorna el dict de Gemini.
 
-**Flujo:**
-1. Invoca el detector de silencio (`silence_detector`).
-2. Si se detecta silencio puro, retorna `_SILENCE_RESPONSE`: todos los scores en 0 y feedback indicando audio vacío.
-3. Si hay contenido de audio, invoca `GeminiPronunciationService.evaluate_phrase()`.
-4. Retorna el resultado parseado como `PhrasePronunciationResponse`.
+### `create_pronunciation_session(db, user, payload)` — `sessions.py`
 
-**Errores:** `GeminiPronunciationError` si Gemini no puede procesar el audio o la respuesta es inválida.
+En una transacción inserta `sessions(module='pronunciation', status='completed', parent_id=NULL)` con `duration_ms` y `score` derivados + `pronunciation_metrics` 1:1 (incluye `level`).
 
-### `save_pronunciation_session(data, user, session)`
+### `_derive_overall_score(payload)`
 
-Persiste una sesión completa con todas sus evaluaciones.
+Promedio redondeado de los 4 sub-scores. Función separada por mantenibilidad.
 
-**Flujo:**
-1. Crea `PronunciationSession` con los datos agregados.
-2. Por cada evaluación en `data.evaluations`, crea una `PhrasePronunciation`. Los `phoneme_errors` se almacenan como JSONB.
-3. Hace commit de todas las operaciones en una transacción.
+### `list_pronunciation_sessions(db, user)`
 
-### `list_pronunciation_sessions(user, session)`
+JOIN, filtro `module='pronunciation' AND parent_id IS NULL`, orden por `started_at DESC`.
 
-Consulta las sesiones del usuario ordenadas por `created_at` descendente.
+### `get_pronunciation_session(db, user, session_id)`
 
-### `get_pronunciation_session(session_id, user, session)`
+Detalle. Retorna `None` para no-encontrado o cross-user.
 
-Carga la sesión con `selectinload(phrase_pronunciations)`. Valida que `user_id` coincida con el usuario autenticado.
+## 6. Endpoints
 
-## 6. Integración con Gemini AI
+- `POST /pronunciation/evaluate` — multipart con `audio`, `phrase_text`, `phrase_index`, `level` (Form). Retorna `PhraseEvaluation`. 502 si Gemini falla.
+- `POST /pronunciation/sessions` → 201 / 422.
+- `GET /pronunciation/sessions` → 200, lista standalone ordenada por `started_at DESC`.
+- `GET /pronunciation/sessions/{id}` → 200 / 404.
 
-### `GeminiPronunciationService`
+Todos requieren Bearer JWT.
 
-**Ubicación:** `backend/app/infrastructure/ai/pronunciation_gemini.py`
+## 7. Pendientes en el roadmap
 
-**Modelo:** `gemini-2.5-flash`
-
-**Entrada:**
-
-| Parámetro | Tipo | Descripción |
-|-----------|------|-------------|
-| `audio_bytes` | bytes | Contenido binario del archivo de audio. |
-| `mime_type` | str | Tipo MIME: webm, mp4, ogg, wav, mpeg. |
-| `phrase_text` | str | Texto de la frase a evaluar. |
-| `level` | str | Nivel del usuario: basico, intermedio, avanzado. |
-
-**Prompt:** Actúa como experto en fonética clínica del español. Evalúa la producción de vocales (/a/, /e/, /i/, /o/, /u/) y consonantes (/r/, /rr/, /b/-/v/, /s/, /ll/-/y/, /x/, /d/), punto y modo de articulación, fluidez fonética e inteligibilidad.
-
-**Salida JSON:**
-
-```json
-{
-  "overall_score": 85,
-  "vowel_score": 88,
-  "consonant_score": 82,
-  "fluency_score": 85,
-  "intelligibility_score": 87,
-  "feedback": "Texto constructivo de al menos 2 oraciones.",
-  "phoneme_errors": [
-    {
-      "phoneme": "/r/",
-      "word": "mejor",
-      "actual_issue": "Descripcion del problema.",
-      "suggestion": "Sugerencia de mejora."
-    }
-  ]
-}
-```
-
-**Errores:** `GeminiPronunciationError` cuando la respuesta no puede parsearse.
-
-## 7. Endpoints de la API
-
-### POST `/pronunciation/evaluate`
-
-Evalúa una frase individual en tiempo real.
-
-- **Método:** POST
-- **Content-Type:** multipart/form-data
-- **Autenticación:** Bearer token requerido
-
-**Parámetros:**
-
-| Parámetro | Tipo | Ubicación | Descripción |
-|-----------|------|-----------|-------------|
-| `audio` | file | form | Archivo de audio (webm, mp4, ogg, wav, mpeg). |
-| `phrase_text` | string | form | Texto de la frase evaluada. |
-| `phrase_index` | integer | form | Índice ordinal (0-based). |
-| `level` | string | form | Nivel: basico, intermedio, avanzado. |
-
-**Respuesta (200 OK):** `PhrasePronunciationResponse`
-
-**Errores:** `400` — audio vacío o formato inválido. `401` — token inválido.
-
----
-
-### POST `/pronunciation/sessions`
-
-Guarda una sesión completa de pronunciación.
-
-- **Método:** POST — **Código:** 201 Created
-- **Body:** `PronunciationSessionRequest`
-- **Respuesta:** `PronunciationSessionResponse`
-
----
-
-### GET `/pronunciation/sessions`
-
-Lista las sesiones del usuario autenticado, ordenadas descendentemente.
-
-- **Respuesta (200 OK):** `list[PronunciationSessionListItem]`
-
----
-
-### GET `/pronunciation/sessions/{session_id}`
-
-Detalles completos de una sesión con todas sus evaluaciones de frases.
-
-- **Respuesta (200 OK):** `PronunciationSessionResponse`
-- **Errores:** `404` — sesión no existe. `403` — sesión pertenece a otro usuario.
+- **Composición en sesión live**: cuando se reescriba `live`, `create_pronunciation_session` debe aceptar `parent_id` opcional.
+- **Sesiones abortadas**: hoy solo `status='completed'`.
+- **Cache efímera de feedback Gemini**: igual que acentuación, hoy el feedback solo vive en la respuesta inmediata del `/evaluate`. Si se quiere mostrar después de la sesión: Redis con TTL.
+- **MIME allowlist unificada para evaluate endpoints**: refactor pendiente entre acentuación y pronunciación para validar con 415 en vez de fallback silencioso.
+- **`level` como enum nativo**: si los niveles se vuelven catálogo cerrado, migrar a Postgres ENUM + `Literal` en Pydantic.

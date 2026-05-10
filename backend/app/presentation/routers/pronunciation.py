@@ -1,80 +1,77 @@
-# Full module documentation: documentacion/modulos/pronunciacion.md
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.entities.pronunciation_metrics import PronunciationMetrics
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.ai.pronunciation_gemini import GeminiPronunciationError
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.pronunciation import (
-    PhonemeErrorSchema,
-    PhrasePronunciationResponse,
+    PhonemeError,
+    PhraseEvaluation,
+    PronunciationMetricsOutput,
+    PronunciationSessionCreate,
+    PronunciationSessionDetail,
     PronunciationSessionListItem,
-    PronunciationSessionRequest,
-    PronunciationSessionResponse,
 )
-import app.use_cases.pronunciation.evaluate_phrase as evaluate_phrase_module
+from app.use_cases.pronunciation.evaluate_phrase import evaluate_phrase
 from app.use_cases.pronunciation.sessions import (
+    create_pronunciation_session,
     get_pronunciation_session,
     list_pronunciation_sessions,
-    save_pronunciation_session,
 )
 
 router = APIRouter(prefix="/pronunciation", tags=["pronunciation"])
 
-ALLOWED_AUDIO_MIME_TYPES = {"audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/mpeg"}
 
-
-def _build_session_response(result) -> PronunciationSessionResponse:
-    # Centralises entity-to-schema mapping so create_session and
-    # get_session_detail do not duplicate the same transformation.
-    return PronunciationSessionResponse(
-        id=str(result.id),
-        level=result.level,
-        overall_score=float(result.overall_score),
-        vowel_score=float(result.vowel_score),
-        consonant_score=float(result.consonant_score),
-        fluency_score=float(result.fluency_score),
-        intelligibility_score=float(result.intelligibility_score),
-        summary_feedback=result.summary_feedback,
-        created_at=result.created_at.isoformat(),
-        evaluations=[
-            PhrasePronunciationResponse(
-                phrase_text=ev.phrase_text,
-                phrase_index=ev.phrase_index,
-                overall_score=float(ev.overall_score),
-                vowel_score=float(ev.vowel_score),
-                consonant_score=float(ev.consonant_score),
-                fluency_score=float(ev.fluency_score),
-                intelligibility_score=float(ev.intelligibility_score),
-                feedback=ev.feedback,
-                phoneme_errors=[
-                    PhonemeErrorSchema(**error_item)
-                    for error_item in ev.phoneme_errors
-                ],
-            )
-            for ev in result.phrase_pronunciations
-        ],
+def _build_detail(
+    session_row: Session, metrics_row: PronunciationMetrics
+) -> PronunciationSessionDetail:
+    return PronunciationSessionDetail(
+        id=session_row.id,
+        user_id=session_row.user_id,
+        started_at=session_row.started_at,
+        ended_at=session_row.ended_at,
+        duration_ms=session_row.duration_ms,
+        score=session_row.score,
+        status=session_row.status,
+        created_at=session_row.created_at,
+        metrics=PronunciationMetricsOutput.model_validate(metrics_row),
     )
 
 
-@router.post("/evaluate", response_model=PhrasePronunciationResponse)
+@router.post("/evaluate", response_model=PhraseEvaluation)
 async def evaluate_phrase_endpoint(
     audio: UploadFile,
     phrase_text: str = Form(...),
     phrase_index: int = Form(...),
     level: str = Form(...),
     user: User = Depends(get_current_user),
-):
+) -> PhraseEvaluation:
+    """Score a single phrase via Gemini.
+
+    The response carries Gemini's per-phrase feedback and phoneme_errors
+    for ephemeral display in the UI; none of that is persisted to the DB.
+    The frontend aggregates phrase scores and posts /sessions to record
+    the session's aggregated metrics.
+    """
+
     audio_bytes = await audio.read()
-    mime_type = audio.content_type if audio.content_type in ALLOWED_AUDIO_MIME_TYPES else "audio/webm"
+    mime_type = audio.content_type or "audio/webm"
 
     try:
-        evaluation = await evaluate_phrase_module.evaluate_phrase(audio_bytes, mime_type, phrase_text, level)
+        evaluation = await evaluate_phrase(audio_bytes, mime_type, phrase_text, level)
     except GeminiPronunciationError as error:
-        raise HTTPException(status_code=502, detail=str(error))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+        )
 
-    return PhrasePronunciationResponse(
+    return PhraseEvaluation(
         phrase_text=phrase_text,
         phrase_index=phrase_index,
         overall_score=evaluation["overall_score"],
@@ -84,56 +81,59 @@ async def evaluate_phrase_endpoint(
         intelligibility_score=evaluation["intelligibility_score"],
         feedback=evaluation["feedback"],
         phoneme_errors=[
-            PhonemeErrorSchema(**error_item)
+            PhonemeError(**error_item)
             for error_item in evaluation.get("phoneme_errors", [])
         ],
     )
 
 
-@router.post("/sessions", response_model=PronunciationSessionResponse, status_code=201)
-async def create_session(
-    request: PronunciationSessionRequest,
+@router.post(
+    "/sessions",
+    response_model=PronunciationSessionDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_session_endpoint(
+    payload: PronunciationSessionCreate,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    pronunciation_session = await save_pronunciation_session(
-        data=request.model_dump(),
-        user=user,
-        session=session,
+    db: AsyncSession = Depends(get_session),
+) -> PronunciationSessionDetail:
+    session_row, metrics_row = await create_pronunciation_session(
+        db=db, user=user, payload=payload
     )
-
-    result = await get_pronunciation_session(str(pronunciation_session.id), user, session)
-    if not result:
-        raise HTTPException(status_code=500, detail="Error al recuperar la sesion creada")
-
-    return _build_session_response(result)
+    return _build_detail(session_row, metrics_row)
 
 
 @router.get("/sessions", response_model=list[PronunciationSessionListItem])
-async def list_sessions(
+async def list_sessions_endpoint(
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    sessions = await list_pronunciation_sessions(user, session)
+    db: AsyncSession = Depends(get_session),
+) -> list[PronunciationSessionListItem]:
+    rows = await list_pronunciation_sessions(db=db, user=user)
     return [
         PronunciationSessionListItem(
-            id=str(s.id),
-            level=s.level,
-            overall_score=float(s.overall_score),
-            created_at=s.created_at.isoformat(),
+            id=session_row.id,
+            started_at=session_row.started_at,
+            ended_at=session_row.ended_at,
+            duration_ms=session_row.duration_ms,
+            score=session_row.score,
+            status=session_row.status,
+            level=metrics_row.level,
+            phrases_count=metrics_row.phrases_count,
         )
-        for s in sessions
+        for session_row, metrics_row in rows
     ]
 
 
-@router.get("/sessions/{session_id}", response_model=PronunciationSessionResponse)
-async def get_session_detail(
-    session_id: str,
+@router.get("/sessions/{session_id}", response_model=PronunciationSessionDetail)
+async def get_session_endpoint(
+    session_id: UUID,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    result = await get_pronunciation_session(session_id, user, session)
-    if not result:
-        raise HTTPException(status_code=404, detail="Sesion no encontrada")
-
-    return _build_session_response(result)
+    db: AsyncSession = Depends(get_session),
+) -> PronunciationSessionDetail:
+    found = await get_pronunciation_session(db=db, user=user, session_id=session_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de pronunciación no encontrada",
+        )
+    return _build_detail(*found)
