@@ -7,6 +7,7 @@ from app.infrastructure.db.session import check_db_connection, dispose_connector
 from app.presentation.routers.accentuation import router as accentuation_router
 from app.presentation.routers.auth import router as auth_router
 from app.presentation.routers.facial_expression import router as facial_expression_router
+from app.presentation.routers.fluency import router as fluency_router
 from app.presentation.routers.linguistic_versatility import (
     router as linguistic_versatility_router,
 )
@@ -48,8 +49,9 @@ app.include_router(muletillas_router)
 app.include_router(facial_expression_router)
 app.include_router(precision_router)
 app.include_router(linguistic_versatility_router)
+app.include_router(fluency_router)
 
-# NOTE: Remaining module routers (fluency, consistency, live) are temporarily
+# NOTE: Remaining module routers (consistency, live) are temporarily
 # disabled. They are being rewritten one by one against the new uniform
 # sessions/<module>_metrics schema. Each rewritten module gets its own
 # commit that re-registers it here.
