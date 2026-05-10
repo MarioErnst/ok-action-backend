@@ -37,6 +37,7 @@ from app.presentation.schemas.precision import (
     StartSessionRequest,
     StartSessionResponse,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.precision.sessions import (
     NotEnoughPromptsError,
     PromptNotAvailableError,
@@ -88,11 +89,18 @@ async def start_session_endpoint(
 ) -> StartSessionResponse:
     try:
         session_row, _, prompts = await start_precision_session(
-            db=db, user=user, rounds_total=payload.rounds_total
+            db=db,
+            user=user,
+            rounds_total=payload.rounds_total,
+            parent_id=payload.parent_id,
         )
     except NotEnoughPromptsError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         )
 
     return StartSessionResponse(

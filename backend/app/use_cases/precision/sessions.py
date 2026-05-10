@@ -17,6 +17,7 @@ from app.domain.entities.precision_round import PrecisionRound
 from app.domain.entities.prompt import Prompt
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
 class SessionNotFoundError(Exception):
@@ -58,18 +59,24 @@ async def start_precision_session(
     db: AsyncSession,
     user: User,
     rounds_total: int,
+    parent_id: UUID | None = None,
 ) -> tuple[Session, PrecisionMetrics, list[Prompt]]:
     """Create an active precision session and pick its prompts.
 
-    Inserts sessions(status='active', module='precision', parent_id=NULL,
-    started_at=now) plus the 1:1 precision_metrics row. Picks rounds_total
-    random active prompts from the catalog filtered by module='precision';
-    raises NotEnoughPromptsError when the catalog has fewer than that.
+    When parent_id is given, the session is attached to the live composition
+    and metrics.mode flips to 'live'; this matches the proposal note
+    "live solo cuando la precision_sessions tiene parent_id apuntando a una
+    live". Otherwise mode is 'standalone' and parent_id stays NULL.
 
-    Returned prompts are NOT persisted as a per-session assignment; the
-    client tracks which prompt belongs to which round_index and includes
-    prompt_id in each evaluate_round call.
+    Picks rounds_total random active prompts from the catalog filtered by
+    module='precision'; raises NotEnoughPromptsError when the catalog has
+    fewer than that. Returned prompts are NOT persisted as a per-session
+    assignment; the client tracks which prompt belongs to which round_index
+    and includes prompt_id in each evaluate_round call.
     """
+
+    if parent_id is not None:
+        await validate_parent_live_session(db, user, parent_id)
 
     available = await db.execute(
         select(Prompt)
@@ -85,11 +92,16 @@ async def start_precision_session(
         )
 
     started_at = datetime.now(timezone.utc)
+    mode = (
+        PrecisionModeEnum.live
+        if parent_id is not None
+        else PrecisionModeEnum.standalone
+    )
 
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.precision,
-        parent_id=None,
+        parent_id=parent_id,
         started_at=started_at,
         ended_at=None,
         duration_ms=None,
@@ -101,7 +113,7 @@ async def start_precision_session(
 
     metrics_row = PrecisionMetrics(
         session_id=session_row.id,
-        mode=PrecisionModeEnum.standalone,
+        mode=mode,
         rounds_total=rounds_total,
         rounds_completed=0,
     )

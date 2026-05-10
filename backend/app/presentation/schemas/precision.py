@@ -24,6 +24,7 @@ class PromptOut(BaseModel):
 
 class StartSessionRequest(BaseModel):
     rounds_total: int = Field(ge=1, le=20)
+    parent_id: UUID | None = None
 
 
 class StartSessionResponse(BaseModel):

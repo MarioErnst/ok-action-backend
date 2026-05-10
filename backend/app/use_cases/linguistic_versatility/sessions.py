@@ -21,6 +21,7 @@ from app.domain.entities.linguistic_versatility_round import (
 from app.domain.entities.prompt import Prompt
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
 class SessionNotFoundError(Exception):
@@ -56,14 +57,24 @@ async def start_linguistic_versatility_session(
     user: User,
     mode: LinguisticVersatilityModeEnum,
     rounds_total: int,
+    parent_id: UUID | None = None,
 ) -> tuple[Session, LinguisticVersatilityMetrics, list[Prompt]]:
     """Create an active session and pick prompts when in guided mode.
+
+    When parent_id is given, the session is attached to the live composition
+    via Session.parent_id. Unlike precision, the metrics.mode here is
+    independent of the live attachment (guided/free is the user-facing
+    practice mode); a guided round under a live and a guided round
+    standalone differ only in the parent_id linkage.
 
     For guided mode picks rounds_total random active prompts from the
     catalog filtered by module='linguistic_versatility'; raises
     NotEnoughPromptsError if the catalog is too small. For free mode the
     returned prompt list is empty: free rounds carry prompt_id=NULL.
     """
+
+    if parent_id is not None:
+        await validate_parent_live_session(db, user, parent_id)
 
     if mode == LinguisticVersatilityModeEnum.guided:
         available = await db.execute(
@@ -89,7 +100,7 @@ async def start_linguistic_versatility_session(
     session_row = Session(
         user_id=user.id,
         module=ModuleEnum.linguistic_versatility,
-        parent_id=None,
+        parent_id=parent_id,
         started_at=started_at,
         ended_at=None,
         duration_ms=None,

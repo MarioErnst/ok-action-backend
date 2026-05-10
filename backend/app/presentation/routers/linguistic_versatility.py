@@ -59,6 +59,7 @@ from app.use_cases.linguistic_versatility.sessions import (
     list_linguistic_versatility_sessions,
     start_linguistic_versatility_session,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 
 router = APIRouter(prefix="/linguistic-versatility", tags=["linguistic-versatility"])
 
@@ -102,10 +103,15 @@ async def start_session_endpoint(
             user=user,
             mode=LinguisticVersatilityModeEnum(payload.mode),
             rounds_total=payload.rounds_total,
+            parent_id=payload.parent_id,
         )
     except NotEnoughPromptsError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         )
 
     return StartSessionResponse(
