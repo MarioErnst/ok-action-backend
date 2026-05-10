@@ -12,6 +12,7 @@ from app.presentation.routers.fluency import router as fluency_router
 from app.presentation.routers.linguistic_versatility import (
     router as linguistic_versatility_router,
 )
+from app.presentation.routers.live import router as live_router
 from app.presentation.routers.loudness import router as loudness_router
 from app.presentation.routers.muletillas import router as muletillas_router
 from app.presentation.routers.pauses import router as pauses_router
@@ -52,10 +53,7 @@ app.include_router(precision_router)
 app.include_router(linguistic_versatility_router)
 app.include_router(fluency_router)
 app.include_router(consistency_router)
-
-# NOTE: Remaining module router (live) is temporarily disabled. It is being
-# rewritten against the new uniform sessions/<module>_metrics schema; once
-# done it will compose the per-module sessions through parent_id.
+app.include_router(live_router)
 
 
 @app.get("/health")
