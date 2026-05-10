@@ -1,223 +1,321 @@
-# Full module documentation: documentacion/modulos/versatilidad-linguistica.md
-import uuid
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from uuid import UUID
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.linguistic_versatility_question import (
-    LinguisticVersatilityQuestion as QuestionEntity,
+from app.domain.entities.enums import (
+    LinguisticVersatilityModeEnum,
+    ModuleEnum,
 )
-from app.domain.entities.linguistic_versatility_session import (
-    LinguisticVersatilitySession,
+from app.domain.entities.linguistic_versatility_metrics import (
+    LinguisticVersatilityMetrics,
 )
+from app.domain.entities.linguistic_versatility_round import (
+    LinguisticVersatilityRound,
+)
+from app.domain.entities.prompt import Prompt
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.ai.linguistic_versatility_gemini import (
+    GeminiVersatilityService,
     VersatilityGeminiError,
 )
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.linguistic_versatility import (
     EvaluateRoundResponse,
-    QuestionSchema,
-    RoundResultResponse,
-    SessionDetailResponse,
-    SessionListItem,
+    FinalizeSessionResponse,
+    LinguisticVersatilityMetricsOutput,
+    LinguisticVersatilityRoundOutput,
+    LinguisticVersatilitySessionDetail,
+    LinguisticVersatilitySessionListItem,
+    PromptOut,
+    StartSessionRequest,
     StartSessionResponse,
 )
-from app.use_cases.linguistic_versatility.abandon_session import (
-    abandon_versatility_session,
+from app.use_cases.linguistic_versatility.sessions import (
+    NotEnoughPromptsError,
+    PromptModeMismatchError,
+    PromptNotAvailableError,
+    RoundAlreadyEvaluatedError,
+    RoundIndexOutOfRangeError,
+    SessionNotActiveError,
+    SessionNotFoundError,
+    abandon_linguistic_versatility_session,
+    evaluate_round,
+    finalize_linguistic_versatility_session,
+    get_linguistic_versatility_session,
+    list_linguistic_versatility_sessions,
+    start_linguistic_versatility_session,
 )
-from app.use_cases.linguistic_versatility.evaluate_response import (
-    evaluate_versatility_response,
-)
-from app.use_cases.linguistic_versatility.finalize_session import (
-    finalize_versatility_session,
-)
-from app.use_cases.linguistic_versatility.get_history import get_versatility_history
-from app.use_cases.linguistic_versatility.get_session import get_versatility_session
-from app.use_cases.linguistic_versatility.start_session import start_versatility_session
-
-# Cap to mirror the schema constant (5 MB). Read here so the router rejects
-# oversized uploads before they hit Gemini and burn tokens.
-MAX_AUDIO_BYTES = 5 * 1024 * 1024
 
 router = APIRouter(prefix="/linguistic-versatility", tags=["linguistic-versatility"])
 
-
-def _round_to_response(r) -> RoundResultResponse:
-    return RoundResultResponse(
-        id=str(r.id),
-        question_id=str(r.question_id) if r.question_id else None,
-        question_text=r.question_text,
-        versatility_score=r.versatility_score,
-        vocabulary_richness=r.vocabulary_richness,
-        feedback=r.feedback,
-        audio_intelligible=r.audio_intelligible,
-        created_at=r.created_at.isoformat(),
-    )
+_gemini = GeminiVersatilityService()
 
 
-@router.post("/sessions", response_model=StartSessionResponse, status_code=201)
-async def start_session(
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    """Open a guided session and return the questions the user must answer."""
-    try:
-        session, questions = await start_versatility_session(db, user_id=user.id)
-    except Exception:
-        await db.rollback()
-        raise
-    await db.commit()
-    return StartSessionResponse(
-        session_id=str(session.id),
-        total_rounds=session.total_rounds,
-        questions=[
-            QuestionSchema(
-                id=str(q.id),
-                text=q.text,
-                category=q.category,
-                difficulty_level=q.difficulty_level,
-            )
-            for q in questions
+def _build_detail(
+    session_row: Session,
+    metrics_row: LinguisticVersatilityMetrics,
+    round_rows: list[LinguisticVersatilityRound],
+) -> LinguisticVersatilitySessionDetail:
+    return LinguisticVersatilitySessionDetail(
+        id=session_row.id,
+        user_id=session_row.user_id,
+        started_at=session_row.started_at,
+        ended_at=session_row.ended_at,
+        duration_ms=session_row.duration_ms,
+        score=session_row.score,
+        status=session_row.status,
+        created_at=session_row.created_at,
+        metrics=LinguisticVersatilityMetricsOutput.model_validate(metrics_row),
+        rounds=[
+            LinguisticVersatilityRoundOutput.model_validate(r) for r in round_rows
         ],
     )
 
 
-@router.post("/sessions/{session_id}/rounds", response_model=EvaluateRoundResponse)
-async def evaluate_round(
-    session_id: uuid.UUID,
-    audio: UploadFile = File(...),
-    question_id: str = Form(...),
-    db: AsyncSession = Depends(get_session),
+@router.post(
+    "/sessions",
+    response_model=StartSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_session_endpoint(
+    payload: StartSessionRequest,
     user: User = Depends(get_current_user),
-):
-    """Upload one answer audio and get its evaluation back."""
+    db: AsyncSession = Depends(get_session),
+) -> StartSessionResponse:
+    try:
+        session_row, metrics_row, prompts = await start_linguistic_versatility_session(
+            db=db,
+            user=user,
+            mode=LinguisticVersatilityModeEnum(payload.mode),
+            rounds_total=payload.rounds_total,
+        )
+    except NotEnoughPromptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
+
+    return StartSessionResponse(
+        session_id=session_row.id,
+        started_at=session_row.started_at,
+        mode=metrics_row.mode,
+        rounds_total=payload.rounds_total,
+        prompts=[PromptOut.model_validate(p) for p in prompts],
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/rounds",
+    response_model=EvaluateRoundResponse,
+)
+async def evaluate_round_endpoint(
+    session_id: UUID,
+    audio: UploadFile,
+    round_index: int = Form(..., ge=0),
+    prompt_id: UUID | None = Form(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> EvaluateRoundResponse:
+    """Evaluate one round.
+
+    In guided mode the client must include prompt_id and the router fetches
+    its text to give to Gemini. In free mode prompt_id must be omitted and
+    the router calls Gemini's free evaluator. Use_case re-validates the
+    pairing as an invariant.
+    """
+
     audio_bytes = await audio.read()
-    if len(audio_bytes) > MAX_AUDIO_BYTES:
-        raise HTTPException(status_code=413, detail="Audio demasiado grande")
     mime_type = audio.content_type or "audio/webm"
 
-    try:
-        question_uuid = uuid.UUID(question_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Pregunta no encontrada")
+    prompt_text: str | None = None
+    if prompt_id is not None:
+        prompt_row = (
+            await db.execute(
+                select(Prompt).where(
+                    Prompt.id == prompt_id,
+                    Prompt.module == ModuleEnum.linguistic_versatility,
+                    Prompt.is_active.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        if prompt_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"prompt {prompt_id} not found or not available for "
+                f"linguistic_versatility",
+            )
+        prompt_text = prompt_row.text
 
-    question = await db.get(QuestionEntity, question_uuid)
-    if not question:
-        raise HTTPException(status_code=404, detail="Pregunta no encontrada")
-
     try:
-        round_entity = await evaluate_versatility_response(
-            db=db,
-            session_id=session_id,
-            question_id=question_uuid,
-            question_text=question.text,
-            audio_bytes=audio_bytes,
-            mime_type=mime_type,
-        )
+        if prompt_text is not None:
+            evaluation = await _gemini.evaluate_response(
+                audio_bytes, mime_type, prompt_text
+            )
+        else:
+            evaluation = await _gemini.evaluate_free(audio_bytes, mime_type)
     except VersatilityGeminiError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=502, detail=str(exc))
-    except Exception:
-        await db.rollback()
-        raise
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        )
 
-    # Re-read parent session so the response shows the freshest counters.
-    session = await db.get(LinguisticVersatilitySession, session_id)
-    await db.commit()
+    try:
+        round_row = await evaluate_round(
+            db=db,
+            user=user,
+            session_id=session_id,
+            round_index=round_index,
+            prompt_id=prompt_id,
+            gemini_evaluation=evaluation,
+        )
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de versatilidad no encontrada",
+        )
+    except SessionNotActiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+    except RoundAlreadyEvaluatedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+    except RoundIndexOutOfRangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    except PromptModeMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    except PromptNotAvailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
 
     return EvaluateRoundResponse(
-        round_id=str(round_entity.id),
-        audio_intelligible=round_entity.audio_intelligible,
-        versatility_score=round_entity.versatility_score,
-        vocabulary_richness=round_entity.vocabulary_richness,
-        feedback=round_entity.feedback,
-        completed_rounds=session.completed_rounds if session else 0,
-        total_rounds=session.total_rounds if session else 0,
+        round_index=round_row.round_index,
+        prompt_id=round_row.prompt_id,
+        is_audio_intelligible=round_row.is_audio_intelligible,
+        score=round_row.score,
+        vocabulary_richness=round_row.vocabulary_richness,
+        feedback=evaluation.get("feedback", ""),
     )
 
 
-@router.post("/sessions/{session_id}/finalize", response_model=SessionDetailResponse)
-async def finalize_session(
-    session_id: uuid.UUID,
-    db: AsyncSession = Depends(get_session),
+@router.post(
+    "/sessions/{session_id}/finalize",
+    response_model=FinalizeSessionResponse,
+)
+async def finalize_session_endpoint(
+    session_id: UUID,
     user: User = Depends(get_current_user),
-):
-    """Mark a session completed, compute its overall score, and return its detail."""
-    session = await finalize_versatility_session(db, session_id)
-    if not session or session.user_id != user.id:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-    await db.commit()
-
-    # Re-read with rounds for the response.
-    full = await get_versatility_session(db, session_id, user.id)
-    return SessionDetailResponse(
-        id=str(full.id),
-        mode=full.mode,
-        total_rounds=full.total_rounds,
-        completed_rounds=full.completed_rounds,
-        overall_score=full.overall_score,
-        status=full.status,
-        created_at=full.created_at.isoformat(),
-        completed_at=full.completed_at.isoformat() if full.completed_at else None,
-        rounds=[_round_to_response(r) for r in full.rounds],
-    )
-
-
-@router.patch("/sessions/{session_id}/abandon", status_code=204)
-async def abandon_session(
-    session_id: uuid.UUID,
     db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    """Mark a session as abandoned. Idempotent: missing session returns 204 too
-    so the client can fire-and-forget on navigation away."""
-    session = await abandon_versatility_session(db, session_id)
-    if session and session.user_id != user.id:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-    await db.commit()
-
-
-@router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
-async def get_session_detail(
-    session_id: uuid.UUID,
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    """Return the full detail of a session including all rounds."""
-    session = await get_versatility_session(db, session_id, user.id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-    return SessionDetailResponse(
-        id=str(session.id),
-        mode=session.mode,
-        total_rounds=session.total_rounds,
-        completed_rounds=session.completed_rounds,
-        overall_score=session.overall_score,
-        status=session.status,
-        created_at=session.created_at.isoformat(),
-        completed_at=session.completed_at.isoformat() if session.completed_at else None,
-        rounds=[_round_to_response(r) for r in session.rounds],
-    )
-
-
-@router.get("/history", response_model=list[SessionListItem])
-async def history(
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    """Return the user's session history newest first."""
-    sessions = await get_versatility_history(db, user.id)
-    return [
-        SessionListItem(
-            id=str(s.id),
-            mode=s.mode,
-            overall_score=s.overall_score,
-            status=s.status,
-            created_at=s.created_at.isoformat(),
+) -> FinalizeSessionResponse:
+    try:
+        session_row, metrics_row = await finalize_linguistic_versatility_session(
+            db=db, user=user, session_id=session_id
         )
-        for s in sessions
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de versatilidad no encontrada",
+        )
+    except SessionNotActiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+
+    return FinalizeSessionResponse(
+        session_id=session_row.id,
+        status=session_row.status,
+        score=session_row.score,
+        rounds_completed=metrics_row.rounds_completed,
+        rounds_total=metrics_row.rounds_total,
+        vocabulary_richness_avg=metrics_row.vocabulary_richness_avg,
+    )
+
+
+@router.patch(
+    "/sessions/{session_id}/abandon",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+async def abandon_session_endpoint(
+    session_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    try:
+        await abandon_linguistic_versatility_session(
+            db=db, user=user, session_id=session_id
+        )
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de versatilidad no encontrada",
+        )
+    except SessionNotActiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+
+
+@router.get(
+    "/sessions",
+    response_model=list[LinguisticVersatilitySessionListItem],
+)
+async def list_sessions_endpoint(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[LinguisticVersatilitySessionListItem]:
+    rows = await list_linguistic_versatility_sessions(db=db, user=user)
+    return [
+        LinguisticVersatilitySessionListItem(
+            id=session_row.id,
+            started_at=session_row.started_at,
+            ended_at=session_row.ended_at,
+            duration_ms=session_row.duration_ms,
+            score=session_row.score,
+            status=session_row.status,
+            mode=metrics_row.mode,
+            rounds_total=metrics_row.rounds_total,
+            rounds_completed=metrics_row.rounds_completed,
+            vocabulary_richness_avg=metrics_row.vocabulary_richness_avg,
+        )
+        for session_row, metrics_row in rows
     ]
 
 
+@router.get(
+    "/sessions/{session_id}",
+    response_model=LinguisticVersatilitySessionDetail,
+)
+async def get_session_endpoint(
+    session_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> LinguisticVersatilitySessionDetail:
+    found = await get_linguistic_versatility_session(
+        db=db, user=user, session_id=session_id
+    )
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de versatilidad no encontrada",
+        )
+    return _build_detail(*found)

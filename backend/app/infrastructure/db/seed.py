@@ -132,6 +132,49 @@ def _seed_precision_prompts(session: OrmSession) -> None:
             print(f"Precision prompt already exists: '{text[:50]}...'")
 
 
+def _seed_linguistic_versatility_prompts(session: OrmSession) -> None:
+    """Seed open-ended questions for linguistic_versatility (guided mode).
+
+    Each prompt invites the user to talk for ~30s about a topic that exposes
+    vocabulary range. Free mode does not use these prompts. Idempotent on
+    (module, text).
+    """
+
+    prompts = [
+        "Describe tu lugar favorito de la ciudad y por qué te gusta.",
+        "Cuéntame sobre una película o libro que te haya marcado, sin contar el final.",
+        "Explica con tus palabras cómo funciona algo que te apasione.",
+        "Describe un sabor o un aroma que te traiga recuerdos vívidos.",
+        "Habla de una persona que admires y de qué cualidades tiene.",
+        "Imagina que tenés que vender un producto cualquiera. Convénceme.",
+        "Cuéntame qué hiciste el último fin de semana, con el mayor detalle posible.",
+        "Describe un paisaje que conozcas, como si la persona que escucha nunca lo hubiera visto.",
+        "Explica un proceso cotidiano (cocinar algo, llegar a un lugar) paso a paso.",
+        "Cuéntame qué te gustaría aprender en los próximos meses y por qué.",
+    ]
+    for text in prompts:
+        existing = session.execute(
+            select(Prompt).where(
+                Prompt.module == ModuleEnum.linguistic_versatility,
+                Prompt.text == text,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                Prompt(
+                    module=ModuleEnum.linguistic_versatility,
+                    text=text,
+                    category="general",
+                    difficulty="basic",
+                    language="es",
+                    is_active=True,
+                )
+            )
+            print(f"Linguistic versatility prompt seeded: '{text[:50]}...'")
+        else:
+            print(f"Linguistic versatility prompt already exists: '{text[:50]}...'")
+
+
 def _seed_dev_user(session: OrmSession, role: Role) -> None:
     if not settings.dev_user_email:
         return
@@ -162,6 +205,7 @@ def seed() -> None:
         role = _seed_role(session)
         _seed_loudness_presets(session)
         _seed_precision_prompts(session)
+        _seed_linguistic_versatility_prompts(session)
         _seed_dev_user(session, role)
         session.commit()
         print("Seed completed")
