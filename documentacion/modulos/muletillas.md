@@ -2,236 +2,137 @@
 
 ## 1. Descripción funcional
 
-El módulo de Muletillas ayuda a los usuarios a identificar y reducir palabras de relleno (muletillas) en su comunicación oral. El flujo operativo es el siguiente:
+El módulo de Muletillas ayuda al usuario a identificar y reducir palabras de relleno ("o sea", "este", "eh", etc.). Flujo:
 
-1. El sistema presenta una pregunta aleatoria al usuario para estimular respuestas espontáneas.
-2. El usuario graba su respuesta en voz alta.
-3. Gemini AI transcribe el audio y analiza su contenido.
-4. El sistema identifica muletillas (palabras de relleno como "eh", "um", "o sea", "este", etc.).
-5. Se calcula la frecuencia y severidad de cada muletilla detectada.
-6. La sesión completa se persiste en la base de datos para seguimiento del progreso.
-7. El usuario recibe retroalimentación detallada: puntuaciones, muletillas identificadas, sugerencias de mejora, fortalezas y áreas de mejora.
+1. El frontend pide una pregunta abierta al endpoint random.
+2. El usuario graba su respuesta.
+3. El frontend manda el audio al endpoint de evaluación. Gemini AI devuelve scores y la lista de muletillas detectadas con su severidad y frecuencia.
+4. El frontend agrega los resultados (incluida la lista de muletillas) y los manda al endpoint de creación de sesión.
+5. El backend persiste solo las métricas agregadas y el conteo por palabra normalizada; el feedback verbal de Gemini se descarta tras mostrarlo en la UI.
 
 ## 2. Capas del módulo
 
 | Capa | Ubicación | Responsabilidad |
 |------|-----------|-----------------|
-| **Presentación (Router)** | `backend/app/presentation/routers/muletillas.py` | Recibe solicitudes HTTP, valida entrada, retorna respuestas. |
-| **Presentación (Schemas)** | `backend/app/presentation/schemas/muletillas.py` | Define estructuras de solicitud y respuesta con validación. |
-| **Casos de uso** | `backend/app/use_cases/muletillas/` | Lógica de negocio: preguntas, evaluación y persistencia (sessions.py, evaluate_response.py). |
-| **Entidades** | `backend/app/domain/entities/muletillas_session.py` | Modelos `MuletillasSession` y `PhraseMuletillas`. |
-| **Servicio IA** | `backend/app/infrastructure/ai/muletillas_gemini.py` | `GeminiMuletillasService`: análisis de audio con Gemini. |
+| Router | `backend/app/presentation/routers/muletillas.py` | Endpoints HTTP (random + evaluate + sessions CRUD), mapeo de errores. |
+| Schemas | `backend/app/presentation/schemas/muletillas.py` | Contratos Pydantic v2 (per-respuesta efímero + sesión persistida). |
+| Use cases | `backend/app/use_cases/muletillas/evaluate_response.py`, `sessions.py` | Llamada a Gemini con corte por silencio + persistencia con normalización de palabras. |
+| Infra AI | `backend/app/infrastructure/ai/muletillas_gemini.py` | Cliente Gemini con prompt, schema (severity en inglés, scores integer) y catálogo de muletillas frecuentes. |
+| Infra audio | `backend/app/infrastructure/audio/silence_detector.py` | Detector de silencio compartido. |
+| Entidades | `backend/app/domain/entities/session.py`, `muletillas_metrics.py`, `muletillas_word_usage.py` | Modelo SQLAlchemy del esquema uniforme. |
 
 ## 3. Modelo de datos
 
-### Tabla: `muletillas_sessions`
+Una sesión de muletillas se representa con tres tipos de filas: `sessions` raíz, `muletillas_metrics` 1:1 y N filas en `muletillas_word_usage`.
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la sesión. |
-| `user_id` | UUID | FK → users (CASCADE) | Usuario propietario. |
-| `question_text` | TEXT | NOT NULL | Pregunta presentada al usuario. |
-| `overall_score` | NUMERIC(4,2) | NOT NULL | Puntuación general (0-100). |
-| `fluency_score` | NUMERIC(4,2) | NOT NULL | Puntuación de fluidez (0-100). |
-| `muletillas_score` | NUMERIC(4,2) | NOT NULL | Puntuación de ausencia de muletillas (0-100). |
-| `total_muletillas_count` | INTEGER | NOT NULL | Número total de muletillas detectadas. |
-| `muletillas_per_minute` | NUMERIC(5,2) | NOT NULL | Frecuencia de muletillas por minuto. |
-| `feedback` | TEXT | NOT NULL | Retroalimentación general. |
-| `strengths` | TEXT | NOT NULL | Fortalezas identificadas. |
-| `improvement_areas` | TEXT | NOT NULL | Áreas de mejora sugeridas. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Timestamp de creación. |
+### `sessions` (raíz, compartida)
 
-**Relación:** Una sesión tiene muchas `phrase_muletillas` (1:N).
+Para muletillas standalone: `module='muletillas'`, `parent_id=NULL`, `status='completed'`. `score` lo deriva el backend = `fluency_score`.
 
-### Tabla: `phrase_muletillas`
+### `muletillas_metrics` (1:1 con `sessions`)
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único. |
-| `session_id` | UUID | FK → muletillas_sessions (CASCADE) | Sesión a la que pertenece. |
-| `word` | VARCHAR(100) | NOT NULL | Palabra de relleno detectada (ej: "o sea", "eh"). |
-| `count` | INTEGER | NOT NULL | Número de veces que aparece en la respuesta. |
-| `severity` | VARCHAR(10) | NOT NULL | Severidad: "alta" (≥3 ocurrencias), "media" (2), "baja" (1). |
-| `suggestion` | TEXT | NOT NULL | Sugerencia personalizada para evitar esta muletilla. |
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `fluency_score` | SMALLINT | NOT NULL, CHECK 0-100 | Puntuación de fluidez agregada (única métrica overall del nuevo schema). |
+| `muletillas_count` | INT | NOT NULL DEFAULT 0 | Total de muletillas (suma de `count` en `muletillas_word_usage`). |
 
-### Migración
+### `muletillas_word_usage` (N:1 con `sessions`)
 
-Archivo: `backend/alembic/versions/e7f3a1b2c9d0_add_muletillas_tables.py`
+Una fila por palabra normalizada por sesión. PK compuesta evita duplicados. Permite consultas longitudinales tipo "top muletillas del usuario X en últimos N días".
 
-## 4. Esquemas de solicitud y respuesta
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK compuesta + FK `sessions.id` ON DELETE CASCADE | Sesión a la que pertenece. |
+| `word` | VARCHAR(100) | PK compuesta | Palabra normalizada (lowercase, trimmed, sin acentos). |
+| `count` | INT | NOT NULL DEFAULT 1 | Veces que apareció en la sesión. |
+| `severity` | muletilla_severity_enum | NOT NULL | `low`, `medium` o `high`. |
 
-### `MuletillaDetectedSchema`
+Índice `ix_muletillas_word ON word` para top-N globales o por usuario via JOIN con `sessions`.
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `word` | str | Palabra de relleno detectada. |
-| `count` | int | Número de ocurrencias. |
-| `severity` | str | "alta", "media" o "baja". |
-| `suggestion` | str | Consejo para evitarla. |
+### Decisiones de diseño
 
-### `MuletillasEvaluationResponse`
+- **`score` = `fluency_score`** (derivado en backend). Único métrica overall del nuevo schema; precedente loudness.
+- **`muletillas_count` derivado en backend** = `sum(w.count for w in words)`. El cliente no envía el total, evita la posibilidad de que diverja de la lista de palabras.
+- **Word normalization server-side**: `lowercase + trim + strip accents` (NFKD). El cliente puede mandar "EH", "Êh" o "  eh  " y todo cae en `eh`. Si el cliente manda dos entradas que normalizan a la misma palabra, el use_case lanza `DuplicateMuletillaWordError` → 422.
+- **Severity en inglés (`low|medium|high`) end-to-end**: el ENUM nativo de Postgres usa estas etiquetas. La prompt y `response_schema` de Gemini se actualizaron para que devuelva directamente en inglés (no traducimos en boundary).
+- **Schema Gemini con `"integer"`** para los 4 score fields (preemptive, lección de las review previas).
+- **Drops per JSON propuesta**:
+  - `question_text` y `feedback`/`strengths`/`improvement_areas`: texto LLM sin valor longitudinal.
+  - `muletillas_per_minute`: derivable de `muletillas_count / duration_ms`.
+  - `muletillas_score` (separado de `fluency_score`): el nuevo schema colapsó las dos métricas overall en una.
+  - `overall_score` ephemeral: el `score` de la sesión es derivado en backend.
+  - `suggestion` por palabra: texto LLM, no se persiste; el cliente la muestra en UI.
+- **PK compuesta `(session_id, word)`** en `muletillas_word_usage`: una sola fila por palabra por sesión. Si el futuro pide trackear cada ocurrencia con timestamp, hay que cambiar a PK sintética + columna `occurred_at`.
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `overall_score` | float | Puntuación general (0-100). |
-| `fluency_score` | float | Puntuación de fluidez (0-100). |
-| `muletillas_score` | float | Puntuación de ausencia de muletillas (0-100). |
-| `total_muletillas_count` | int | Total de muletillas detectadas. |
-| `muletillas_per_minute` | float | Frecuencia de muletillas por minuto. |
-| `muletillas_detected` | list[MuletillaDetectedSchema] | Lista de muletillas con detalle. |
-| `feedback` | str | Retroalimentación general. |
-| `strengths` | str | Fortalezas identificadas. |
-| `improvement_areas` | str | Áreas de mejora. |
+## 4. Esquemas
 
-### `MuletillasSessionRequest`
+### Evaluación efímera (Gemini)
 
-Todos los campos de `MuletillasEvaluationResponse` más `question_text`.
+`MuletillaDetectedEphemeral`: `word`, `count` (>=1), `severity` (`low|medium|high`), `suggestion` (texto Gemini, no persistido).
 
-### `MuletillasSessionResponse`
+`MuletillasEvaluationResponse`: `overall_score`, `fluency_score`, `muletillas_score` (todos 0-100, ephemerals), `total_muletillas_count`, `muletillas_per_minute` (float), `muletillas_detected`, `feedback`, `strengths`, `improvement_areas`.
 
-Igual al request más `id` y `created_at`.
+`RandomQuestionResponse`: `question`.
 
-### `MuletillasSessionListItem`
+### Persistido
 
-Respuesta compacta: `id`, `question_text`, `overall_score`, `total_muletillas_count`, `created_at`.
+`MuletillaWordInput`: `word` (1-100 chars, normaliza server-side), `count` (>=1), `severity` (`low|medium|high`).
 
-### `RandomQuestionResponse`
+`MuletillasMetricsInput`: `fluency_score` (0-100), `words` (lista, puede ir vacía si no se detectaron muletillas).
 
-Un único campo: `question` (str) con la pregunta aleatoria.
+`MuletillasMetricsOutput`: `fluency_score`, `muletillas_count`.
+
+`MuletillasSessionCreate`: `started_at`, `ended_at`, `metrics`. Validador: `ended_at > started_at`.
+
+`MuletillasSessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`, `words` (lista ordenada alfabéticamente).
+
+`MuletillasSessionListItem`: `id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `muletillas_count`, `fluency_score`. Incluye los dos números más informativos para una card de timeline.
 
 ## 5. Casos de uso
 
-### `get_random_question()`
+### `evaluate_response(audio_bytes, mime_type, question_text)` — `evaluate_response.py`
 
-Retorna `random.choice(EVALUATION_QUESTIONS)`. Las 8 preguntas predefinidas son:
+1. Si el detector de silencio marca el audio como vacío → retorna `_SILENCE_RESPONSE` (todos scores 0, sin muletillas).
+2. Si el detector falla → loggea warning y procede a Gemini.
+3. Llama a `GeminiMuletillasService.evaluate_response` y retorna el dict.
 
-1. "Cuéntame sobre tu día de hoy."
-2. "Describe tu lugar de trabajo o estudio."
-3. "Explica en qué consiste tu pasatiempo favorito."
-4. "Habla sobre una película o libro que hayas disfrutado recientemente."
-5. "Describe un momento importante en tu vida."
-6. "¿Qué te motiva a mejorar tu comunicación oral?"
-7. "Habla sobre alguien que admiras y por qué."
-8. "Describe el lugar donde creciste."
+### `get_random_question()` — `evaluate_response.py`
 
-### `evaluate_response(audio_bytes, mime_type, question_text)`
+Retorna pregunta aleatoria del catálogo hardcoded `EVALUATION_QUESTIONS`. Pendiente: migrar al catálogo unificado `prompts` filtrado por `module='muletillas'`.
 
-**Flujo:**
-1. Detecta si el audio contiene solo silencio.
-2. Si es silencioso, retorna `_SILENCE_RESPONSE` (todos los scores en 0, lista de muletillas vacía).
-3. Si hay contenido, invoca `GeminiMuletillasService.evaluate_response()`.
+### `_normalize_word(word)` — `sessions.py`
 
-**Errores:** Excepciones de validación si el audio está vacío o es inválido.
+Lowercase + trim + NFKD decompose + descartar combining marks. Resultado: forma canónica de la palabra para PK uniforme.
 
-### `save_muletillas_session(data, user, session)`
+### `create_muletillas_session(db, user, payload)` — `sessions.py`
 
-Crea `MuletillasSession` y, en la misma transacción, una `PhraseMuletillas` por cada muletilla en `data.muletillas_detected`. Hace commit al finalizar.
+1. Normaliza cada palabra y verifica que no haya duplicados después de normalizar (sino `DuplicateMuletillaWordError` → 422).
+2. Calcula `duration_ms` y `muletillas_count = sum(counts)`.
+3. En una transacción inserta `sessions(module='muletillas', status='completed', parent_id=NULL)` + `muletillas_metrics` + N filas en `muletillas_word_usage`.
 
-### `list_muletillas_sessions(user, session)`
+### `list_muletillas_sessions(db, user)`
 
-Consulta todas las sesiones del usuario ordenadas por `created_at` descendente.
+JOIN `sessions + muletillas_metrics`, filtra `module='muletillas' AND parent_id IS NULL`, ordena por `started_at DESC`.
 
-### `get_muletillas_session(session_id, user, session)`
+### `get_muletillas_session(db, user, session_id)`
 
-Carga la sesión con `selectinload(muletillas_detected)`. Verifica que la sesión pertenezca al usuario.
+Detalle con palabras ordenadas alfabéticamente. Retorna `None` para no-encontrado o cross-user.
 
-**Errores:** `NotFoundError` si la sesión no existe. `ForbiddenError` si el usuario no es propietario.
+## 6. Endpoints
 
-## 6. Integración con Gemini AI
+- `GET /muletillas/questions/random` → 200, `{question}`. Hardcoded por ahora.
+- `POST /muletillas/evaluate` — multipart con `audio`, `question_text` (Form). Retorna `MuletillasEvaluationResponse`. 502 si Gemini falla.
+- `POST /muletillas/sessions` → 201 / 422 (incluye 422 por palabra duplicada tras normalización).
+- `GET /muletillas/sessions` → 200, lista standalone ordenada por `started_at DESC`.
+- `GET /muletillas/sessions/{id}` → 200 / 404.
 
-### `GeminiMuletillasService`
+Todos los endpoints requieren Bearer JWT.
 
-**Ubicación:** `backend/app/infrastructure/ai/muletillas_gemini.py`
+## 7. Pendientes en el roadmap
 
-**Modelo:** `gemini-2.5-flash`
-
-**Entrada:**
-
-| Parámetro | Tipo | Descripción |
-|-----------|------|-------------|
-| `audio_bytes` | bytes | Contenido del archivo de audio. |
-| `mime_type` | str | Tipo MIME del audio. |
-| `question_text` | str | Contexto de la pregunta para interpretar la respuesta. |
-
-**Prompt:** Actúa como experto en comunicación oral. Detecta muletillas: "o sea", "este", "eh", "um", "ah", "básicamente", "tipo", "digamos", repeticiones sin sentido semántico y patrones de relleno recurrentes. Estima la duración del audio para calcular `muletillas_per_minute`. Califica la severidad: alta (3+ ocurrencias), media (2), baja (1).
-
-**Salida JSON:**
-
-```json
-{
-  "overall_score": 78,
-  "fluency_score": 82,
-  "muletillas_score": 72,
-  "total_muletillas_count": 5,
-  "muletillas_per_minute": 2.5,
-  "muletillas_detected": [
-    {
-      "word": "este",
-      "count": 3,
-      "severity": "alta",
-      "suggestion": "Sustituye 'este' por una pausa natural o una respiracion breve."
-    }
-  ],
-  "feedback": "Retroalimentacion constructiva.",
-  "strengths": "Fortalezas identificadas.",
-  "improvement_areas": "Areas de mejora."
-}
-```
-
-**Errores:** `GeminiMuletillasError` cuando la respuesta de Gemini no puede parsearse. Se registra el error con contexto suficiente para diagnóstico.
-
-## 7. Endpoints de la API
-
-### GET `/muletillas/questions/random`
-
-Obtiene una pregunta aleatoria para iniciar una evaluación.
-
-- **Autenticación:** Bearer token requerido
-- **Respuesta (200 OK):** `RandomQuestionResponse`
-
----
-
-### POST `/muletillas/evaluate`
-
-Evalúa una respuesta de audio detectando muletillas.
-
-- **Content-Type:** multipart/form-data
-- **Autenticación:** Bearer token requerido
-
-**Parámetros:**
-
-| Parámetro | Tipo | Requerido | Descripción |
-|-----------|------|-----------|-------------|
-| `audio` | file | Sí | Archivo de audio (MP3, WAV, WebM, OGG). |
-| `question_text` | string | Sí | Pregunta presentada al usuario. |
-
-**Respuesta (200 OK):** `MuletillasEvaluationResponse`
-
-**Errores:** `400` — audio vacío o parámetros faltantes. `422` — Gemini no pudo procesar el audio.
-
----
-
-### POST `/muletillas/sessions`
-
-Crea una nueva sesión persistiendo los resultados.
-
-- **Código:** 201 Created
-- **Body:** `MuletillasSessionRequest`
-- **Respuesta:** `MuletillasSessionResponse`
-
----
-
-### GET `/muletillas/sessions`
-
-Lista todas las sesiones del usuario en orden descendente.
-
-- **Respuesta (200 OK):** `list[MuletillasSessionListItem]`
-
----
-
-### GET `/muletillas/sessions/{session_id}`
-
-Detalles completos de una sesión con todas las muletillas detectadas.
-
-- **Respuesta (200 OK):** `MuletillasSessionResponse`
-- **Errores:** `404` — sesión no existe. `403` — sesión pertenece a otro usuario.
+- **Composición en sesión live**: cuando se reescriba `live`, `create_muletillas_session` debe aceptar `parent_id` opcional.
+- **Sesiones abortadas**: hoy solo `status='completed'`.
+- **Migrar `EVALUATION_QUESTIONS` al catálogo `prompts`**: agregar seed + endpoint genérico de prompts. Hoy está hardcoded en `evaluate_response.py`.
+- **Cache efímera de feedback Gemini**: igual que pronunciación/acentuación, hoy el feedback solo vive en la respuesta inmediata del `/evaluate`.
+- **MIME allowlist unificada para evaluate endpoints**: refactor pendiente entre los 3 módulos con Gemini.

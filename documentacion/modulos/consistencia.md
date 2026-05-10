@@ -1,151 +1,132 @@
-# Consistencia - Documentacion Backend
+# Consistencia — Documentación Backend
 
-## 1. Descripcion funcional
+## 1. Descripción funcional
 
-El modulo de Consistencia evalua si el desempeno oral del usuario se mantiene estable durante una intervencion completa. No busca medir solo si la respuesta es correcta, sino si el hablante sostiene una calidad pareja entre inicio, desarrollo y cierre.
+El módulo de Consistencia evalúa si el usuario mantiene un desempeño parejo de inicio a fin al hablar (ritmo, volumen, claridad, foco, confianza, estructura). Igual que fluency, usa **WebSocket**, pero a diferencia de éste hace **una sola llamada Gemini al cierre** sobre el buffer completo, no por chunks (Gemini necesita comparar inicio/medio/cierre como pieza única).
 
-El modulo analiza seis dimensiones:
+Flujo:
 
-- ritmo estable;
-- volumen estable;
-- claridad estable;
-- foco en la consigna;
-- seguridad al hablar;
-- estructura de inicio, medio y cierre.
+1. Cliente abre WS en `/consistency/session?token=<jwt>`.
+2. Cliente envía `{type: "start", prompt_text: "..."}` (timeout: 10s).
+3. Backend responde `{type: "ready"}`.
+4. Cliente streamea bytes de audio (PCM 16k mono) hasta `{type: "end"}` o el límite (120s).
+5. Backend evalúa el buffer completo con Gemini (una sola llamada).
+6. Si el audio fue intelegible: persiste 1 fila `sessions` + 1 `consistency_metrics`. Manda `{type: "analysis", data}`, eventualmente `{type: "warning", reason, data}`, y `{type: "session_ended", reason, score, session_id}`.
+7. Si el buffer fue muy corto o Gemini falló: no persiste nada; manda placeholder o error.
 
-La evaluacion standalone se realiza al finalizar el intento porque la consistencia requiere comparar tramos de la misma intervencion. En sesion libre existe una integracion opcional como dimension `consistency`, evaluada en ciclos de 5 segundos.
+## 2. Capas del módulo
 
-## 2. Capas del modulo
-
-| Capa | Archivo | Responsabilidad |
-|---|---|---|
-| Router | `app/presentation/routers/consistency.py` | Expone el WebSocket `/consistency/session`, autentica al usuario y coordina captura, cierre y analisis final. |
-| Use case | `app/use_cases/consistency/prompt_builder.py` | Construye el prompt de evaluacion para Gemini. |
-| Use case | `app/use_cases/consistency/session_manager.py` | Mantiene estado en memoria, fallback sin audio y reglas de advertencia. |
-| AI service | `app/infrastructure/ai/consistency_gemini.py` | Envia audio PCM a Gemini y valida el JSON esperado. |
-| Live session | `app/use_cases/live_session/prompt_builder.py` y `app/infrastructure/ai/live_gemini.py` | Agrega la dimension `consistency` al analisis continuo de sesion libre. |
+| Capa | Ubicación | Responsabilidad |
+|------|-----------|-----------------|
+| Router | `backend/app/presentation/routers/consistency.py` | WebSocket lifecycle + endpoints HTTP de history. Llamada Gemini única al cierre. |
+| Schemas | `backend/app/presentation/schemas/consistency.py` | Contratos Pydantic v2 de los endpoints HTTP. |
+| Use cases | `backend/app/use_cases/consistency/sessions.py`, `session_manager.py`, `prompt_builder.py` | Persistencia + agregación + estado en memoria + prompt Gemini. |
+| Infra AI | `backend/app/infrastructure/ai/consistency_gemini.py` | Cliente Gemini con schema endurecido (scores INTEGER + nuevo `active_pct`). |
+| Entidades | `backend/app/domain/entities/session.py`, `consistency_metrics.py` | Modelo SQLAlchemy del esquema uniforme. |
 
 ## 3. Modelo de datos
 
-El modulo standalone no agrega tablas nuevas. La sesion de Consistencia corre por WebSocket y devuelve el resultado final al cliente.
+### `sessions` (raíz, compartida)
 
-En sesion libre, los resultados de `consistency` se guardan dentro de `live_sessions.analyses`, igual que las dimensiones `pron`, `acc` y `mul`.
+Para consistency standalone: `module='consistency'`, `parent_id=NULL`. Solo se inserta al cierre del WS, igual que fluency.
 
-Ejemplo parcial:
+`status`: `completed` si user_ended/time_limit, `aborted` si disconnect/error/unknown.
 
-```json
-{
-  "dims": {
-    "consistency": {
-      "sc": 82,
-      "classification": "mostly_consistent",
-      "rhythm": 80,
-      "volume": 90,
-      "clarity": 84,
-      "focus": 78,
-      "confidence": 76,
-      "structure": 82,
-      "note": "Mantiene una linea clara con leve perdida de fuerza al cierre.",
-      "det": []
-    }
-  }
-}
-```
+`score` derivado = `consistency_score` (= Gemini's overall `score`).
 
-## 4. Esquemas de solicitud y respuesta
+### `consistency_metrics` (1:1 con `sessions`)
 
-### WebSocket standalone
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `consistency_score` | SMALLINT | NOT NULL, CHECK 0-100 | Score overall de Gemini, clampeado a [0,100]. |
+| `volatility_score` | SMALLINT | NOT NULL, CHECK 0-100 | Derivado server-side: `max(0, 100 - len(volatility_events) * 20)`. 5+ eventos = 0. |
+| `active_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % del audio en que el hablante estuvo emitiendo voz, según Gemini (campo nuevo agregado al prompt y schema). |
 
-Conexion:
+### Decisiones de diseño
 
-```text
-ws://<host>/consistency/session?token=<JWT>
-```
+- **Una sola llamada Gemini al cierre** (no per-chunk como fluency): el análisis de consistencia requiere comparar inicio/medio/cierre como pieza completa. Streaming + análisis incremental no aplica aquí.
+- **`active_pct` campo nuevo agregado a Gemini**: el viejo schema Gemini no lo retornaba. Alternativa rechazada: derivarlo localmente con detector de silencio (heavy en async loop). Decidido: pedirle a Gemini que lo estime junto con los demás scores. Prompt y `_CONSISTENCY_SCHEMA` actualizados.
+- **`volatility_score` derivado de `volatility_events` count**: server-side, fórmula `max(0, 100 - len*20)`. Captura "menos eventos = mayor score". Si quieres una métrica más fina (severidad ponderada por evento), cambia en `_derive_volatility_score`.
+- **`consistency_score` = `score` de Gemini**: el score overall de Gemini ya se computa con la fórmula ponderada de los 6 sub-scores (rhythm, volume, clarity, focus, confidence, structure). Reusarlo evita duplicar la lógica en backend. Si frontend quiere una fórmula distinta, se cambia el prompt.
+- **`session.score` = `consistency_score`**: misma magnitud, una sola fuente de verdad para todas las vistas.
+- **Empty session policy + Gemini failure**: tres escenarios al cierre:
+  - Buffer < MIN: usa `build_no_audio_analysis()` (placeholder con `audio_intelligible=false`); NO persiste.
+  - Gemini falla (None): NO persiste, manda `{type: "error"}`.
+  - Audio intelegible: persiste y manda `analysis + warning + session_ended`.
+- **stop_reason → status mapping** con lecciones de fluency review:
+  - user_ended/time_limit → completed
+  - disconnect/error/unknown → aborted (default conservador)
+  - explícitamente seteado en cada path en `stream_audio` (disconnect → "disconnect", exception → "error").
+- **Drops per JSON**: `timeline`, `volatility_events` (después de derivar `volatility_score`), `classification`, `strengths`, `improvement_areas`, `recommendation`, `fb`, los 6 sub-scores intermedios. Solo los 3 scores finales se persisten.
+- **Schema Gemini endurecido**: 7 score fields cambiados de `"number"` a `"integer"` preemptive + nuevo `active_pct: integer`.
+- **Clamp [0,100] en backend** además del CHECK Postgres: `_clamp_pct` evita que un Gemini fuera de rango (improbable pero posible) reviente el insert.
+- **Auth/persist con private DB session**: igual que fluency, evita mantener una conexión request-scoped abierta durante el streaming.
 
-Mensaje inicial:
+## 4. Esquemas
 
-```json
-{
-  "type": "start",
-  "prompt_text": "Explica una propuesta de mejora para tu equipo."
-}
-```
+### Salida HTTP
 
-Resultado:
+`ConsistencyMetricsOutput`: `consistency_score`, `volatility_score`, `active_pct`.
 
-```json
-{
-  "type": "analysis",
-  "data": {
-    "audio_intelligible": true,
-    "score": 84,
-    "rhythm_consistency_score": 82,
-    "volume_consistency_score": 90,
-    "clarity_consistency_score": 86,
-    "focus_consistency_score": 80,
-    "confidence_consistency_score": 78,
-    "structure_consistency_score": 84,
-    "classification": "mostly_consistent",
-    "timeline": [
-      { "segment": "inicio", "stability": 86, "rhythm": 84, "volume": 90, "clarity": 88, "focus": 82, "confidence": 84, "structure": 80, "note": "Inicio claro." }
-    ],
-    "volatility_events": [],
-    "strengths": ["Mantiene volumen claro"],
-    "improvement_areas": ["Cierra con mayor decision"],
-    "recommendation": "Define una frase de cierre antes de grabar.",
-    "fb": "Tu discurso se mantiene estable, con una leve baja de seguridad al final."
-  }
-}
-```
+`ConsistencySessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`.
+
+`ConsistencySessionListItem` (compacto): `id` + timeline meta + las 3 métricas de consistency. Suficiente para una card.
+
+### Protocolo WS (JSON arbitrario, no schemas Pydantic)
+
+Cliente → servidor:
+- `{"type": "start", "prompt_text": "..."}`
+- bytes (audio)
+- `{"type": "end"}`
+
+Servidor → cliente:
+- `{"type": "ready"}`
+- `{"type": "analysis", "data": {...}}` (al cierre, una sola)
+- `{"type": "warning", "reason": "...", "data": {...}}` (si la heurística dispara)
+- `{"type": "session_ended", "reason": "user_ended|time_limit|disconnect|error|unknown", "score": N|null, "session_id": UUID|null}`
+- `{"type": "error", "message": "..."}` (si Gemini falló)
 
 ## 5. Casos de uso
 
-### `build_consistency_prompt(prompt_text)`
+### `_clamp_pct(value)`, `_safe_int(value, default)` — `sessions.py`
 
-Normaliza la consigna y construye instrucciones para Gemini. El prompt obliga a verificar silencio, audio ininteligible, respuesta fuera de consigna y respuesta demasiado corta antes de puntuar.
+Helpers defensivos para evitar que un campo Gemini fuera de rango/tipo reviente el insert.
 
-### `ConsistencySessionState`
+### `_derive_volatility_score(volatility_events)` — `sessions.py`
 
-Mantiene el estado temporal de la conexion WebSocket. Define el limite de 120 segundos, guarda el analisis final y calcula advertencias:
+`max(0, 100 - len(events) * 20)`. Función separada para que el cambio de fórmula sea local.
 
-- `audio_not_intelligible`;
-- `low_consistency_score`;
-- `consistency_breaks_detected`;
-- `analysis_unavailable`.
+### `_aggregate_analysis(analysis)` — `sessions.py`
 
-### `build_no_audio_analysis()`
+Reduce el dict Gemini a `(overall, consistency, volatility, active)`. Aplica clamps y `_safe_int` en todos los campos.
 
-Genera un resultado local cuando el audio recibido es demasiado corto para enviarlo a Gemini.
+### `persist_consistency_session(db, user, started_at, ended_at, status, analysis)` — `sessions.py`
 
-## 6. Integracion con Gemini AI
+Inserta `sessions(module='consistency')` + `consistency_metrics` 1:1 si `analysis` no es None. Retorna None si no hay nada que persistir.
 
-**Archivo:** `app/infrastructure/ai/consistency_gemini.py`
+### `list_consistency_sessions`, `get_consistency_session` — `sessions.py`
 
-**Modelo:** `gemini-2.5-flash`
+Patrón estándar: JOIN session+metrics, filter `parent_id IS NULL`, 404 para no-encontrado o cross-user.
 
-Gemini recibe audio PCM 16 kHz junto con el prompt construido por el caso de uso. La respuesta se fuerza a JSON mediante `response_schema`.
+### `ConsistencySessionState` — `session_manager.py`
 
-La respuesta no incluye transcripcion. Esto evita mostrar texto inventado cuando el audio no permite reconocer frases exactas. Las observaciones deben describir estabilidad por tramo, no citar contenido literal.
+Estado en memoria de la WS session. Campo `analysis` único (no lista, porque es una sola evaluación al final).
 
-## 7. Endpoints de la API
+## 6. Endpoints
 
-### WebSocket `/consistency/session`
+- `WS /consistency/session?token=<jwt>` — protocolo descrito arriba. Códigos de cierre WS:
+  - 4001: Unauthorized
+  - 4002: Expected start message
+  - normal close: tras `session_ended` o `error`.
+- `GET /consistency/sessions` → 200, lista standalone ordenada por `started_at DESC`. Bearer JWT.
+- `GET /consistency/sessions/{id}` → 200 / 404. Bearer JWT.
 
-- **Autenticacion:** JWT en query param `token`.
-- **Entrada:** frames binarios PCM 16-bit, 16 kHz, mono.
-- **Mensajes cliente:** `start`, `end`.
-- **Mensajes servidor:** `ready`, `analysis`, `warning`, `session_ended`, `error`.
-- **Cierre automatico:** 120 segundos.
+## 7. Pendientes en el roadmap
 
-### Integracion con `/live/session`
-
-La dimension `consistency` se puede enviar dentro de `dims`:
-
-```json
-{
-  "type": "start",
-  "dims": ["pron", "consistency"]
-}
-```
-
-Si no se selecciona, no altera el flujo de sesion libre. Si se selecciona, el backend incluye `dims.consistency` en cada ciclo de analisis.
+- **Composición en sesión live**: `persist_consistency_session` debe aceptar `parent_id` opcional cuando lo invoque el orquestador del módulo `live`.
+- **`stop_reason` persistido**: si las analytics necesitan distinguir reasons, agregar columna `consistency_metrics.stop_reason`.
+- **`active_pct` validation**: hoy depende de la honestidad de Gemini. Si en el futuro se quiere triple-check, computar localmente con detector de silencio agregado y comparar.
+- **Volatility severity weights**: hoy cuenta eventos planos. Si las analytics quieren ponderar severity (low/medium/high), expandir `_derive_volatility_score`.
+- **MIME WS**: cliente debe mandar PCM 16k mono. Sin validación.
+- **Gemini schema range**: agregar `minimum`/`maximum` 0-100 a los scores.

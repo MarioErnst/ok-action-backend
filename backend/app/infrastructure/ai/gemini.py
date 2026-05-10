@@ -47,7 +47,7 @@ Devuelve un JSON con la siguiente estructura exacta:
   "pronunciation_score": <numero entero 0-100>,
   "rhythm_score": <numero entero 0-100>,
   "intonation_score": <numero entero 0-100>,
-  "stress_accuracy_score": <numero entero 0-100>,
+  "stress_score": <numero entero 0-100>,
   "feedback": "<texto en espanol con retroalimentacion constructiva y especifica, minimo 2 oraciones>",
   "specific_errors": [
     {{
@@ -64,11 +64,11 @@ Las puntuaciones deben ser estrictas y honestas. Solo devuelve el JSON, sin text
 GEMINI_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "overall_score": {"type": "number"},
-        "pronunciation_score": {"type": "number"},
-        "rhythm_score": {"type": "number"},
-        "intonation_score": {"type": "number"},
-        "stress_accuracy_score": {"type": "number"},
+        "overall_score": {"type": "integer"},
+        "pronunciation_score": {"type": "integer"},
+        "rhythm_score": {"type": "integer"},
+        "intonation_score": {"type": "integer"},
+        "stress_score": {"type": "integer"},
         "feedback": {"type": "string"},
         "specific_errors": {
             "type": "array",
@@ -89,7 +89,7 @@ GEMINI_RESPONSE_SCHEMA = {
         "pronunciation_score",
         "rhythm_score",
         "intonation_score",
-        "stress_accuracy_score",
+        "stress_score",
         "feedback",
         "specific_errors",
     ],

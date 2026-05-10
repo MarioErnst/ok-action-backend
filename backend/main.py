@@ -7,18 +7,18 @@ from app.infrastructure.db.session import check_db_connection, dispose_connector
 from app.presentation.routers.accentuation import router as accentuation_router
 from app.presentation.routers.auth import router as auth_router
 from app.presentation.routers.consistency import router as consistency_router
-from app.presentation.routers.fluency import router as fluency_router
-from app.presentation.routers.loudness import router as loudness_router
-from app.presentation.routers.pauses import router as pauses_router
-from app.presentation.routers.phonation import router as phonation_router
-from app.presentation.routers.pronunciation import router as pronunciation_router
-from app.presentation.routers.live_session import router as live_session_router
-from app.presentation.routers.muletillas import router as muletillas_router
-from app.presentation.routers.precision import router as precision_router
 from app.presentation.routers.facial_expression import router as facial_expression_router
+from app.presentation.routers.fluency import router as fluency_router
 from app.presentation.routers.linguistic_versatility import (
     router as linguistic_versatility_router,
 )
+from app.presentation.routers.live import router as live_router
+from app.presentation.routers.loudness import router as loudness_router
+from app.presentation.routers.muletillas import router as muletillas_router
+from app.presentation.routers.pauses import router as pauses_router
+from app.presentation.routers.phonation import router as phonation_router
+from app.presentation.routers.precision import router as precision_router
+from app.presentation.routers.pronunciation import router as pronunciation_router
 from config import settings
 
 
@@ -44,16 +44,16 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(phonation_router)
 app.include_router(loudness_router)
+app.include_router(pauses_router)
 app.include_router(accentuation_router)
 app.include_router(pronunciation_router)
 app.include_router(muletillas_router)
-app.include_router(precision_router)
-app.include_router(live_session_router)
 app.include_router(facial_expression_router)
+app.include_router(precision_router)
 app.include_router(linguistic_versatility_router)
-app.include_router(pauses_router)
 app.include_router(fluency_router)
 app.include_router(consistency_router)
+app.include_router(live_router)
 
 
 @app.get("/health")

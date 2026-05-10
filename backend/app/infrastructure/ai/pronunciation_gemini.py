@@ -73,11 +73,11 @@ Solo devuelve el JSON, sin texto adicional."""
 PRONUNCIATION_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "overall_score": {"type": "number"},
-        "vowel_score": {"type": "number"},
-        "consonant_score": {"type": "number"},
-        "fluency_score": {"type": "number"},
-        "intelligibility_score": {"type": "number"},
+        "overall_score": {"type": "integer"},
+        "vowel_score": {"type": "integer"},
+        "consonant_score": {"type": "integer"},
+        "fluency_score": {"type": "integer"},
+        "intelligibility_score": {"type": "integer"},
         "feedback": {"type": "string"},
         "phoneme_errors": {
             "type": "array",

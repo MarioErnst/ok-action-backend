@@ -2,182 +2,156 @@
 
 ## 1. Descripción funcional
 
-El módulo de Fonación permite al usuario seleccionar y ejecutar ejercicios vocales para mejorar su técnica vocal. Los ejercicios disponibles incluyen resonancia, estabilidad vocal y rango de tono.
+El módulo de Fonación permite al usuario ejecutar ejercicios vocales (sostenido y deslizado) para mejorar su técnica vocal. Todo el análisis acústico ocurre en el frontend con Web Audio API: cálculo de frecuencia (Hz), estabilidad, conteo de quiebres y validación de rango esperado por ejercicio.
 
-El análisis acústico de los ejercicios se realiza completamente en el frontend utilizando Web Audio API. El frontend captura y procesa el audio del usuario, calculando métricas como frecuencia (Hz), amplitud (dB) por frame, estabilidad, presencia de quiebres vocales y validación de rango esperado.
+El backend recibe la sesión completa ya analizada y tiene dos responsabilidades:
 
-El backend recibe exclusivamente los resultados ya calculados por el frontend y tiene dos responsabilidades:
-1. Persistir las sesiones de fonación y sus ejercicios asociados en la base de datos.
-2. Retornar el histórico de sesiones al usuario cuando lo solicita.
+1. Persistir la sesión y sus ejercicios bajo el esquema unificado de la base de datos.
+2. Exponer el histórico de sesiones standalone del usuario.
 
-No se realiza procesamiento de audio, análisis de patrones complejos ni cálculos derivados en el backend.
+No realiza procesamiento de audio ni cálculos derivados.
 
 ## 2. Capas del módulo
 
-El módulo Fonación sigue la arquitectura de capas definida en el proyecto:
-
 | Capa | Ubicación | Responsabilidad |
 |------|-----------|-----------------|
-| **Presentación (Router)** | `backend/app/presentation/routers/phonation.py` | Define los endpoints HTTP, valida el formato de las solicitudes, transforma respuestas a JSON. |
-| **Presentación (Schemas)** | `backend/app/presentation/schemas/phonation.py` | Define contratos de solicitud y respuesta con validación de tipos. |
-| **Casos de uso** | `backend/app/use_cases/phonation/sessions.py` | Orquesta la lógica de persistencia y consulta de sesiones de fonación. |
-| **Dominio (Entidades)** | `backend/app/domain/entities/phonation_session.py` | Define la entidad `PhonationSession` con sus atributos y relaciones. |
-| **Dominio (Entidades)** | `backend/app/domain/entities/exercise_result.py` | Define la entidad `ExerciseResult` con sus atributos. |
-
-La separación de responsabilidades garantiza que el router únicamente traduce HTTP, los schemas validan datos, los casos de uso orquestan operaciones de base de datos, y las entidades representan conceptos del dominio sin conocer detalles de persistencia.
+| Router | `backend/app/presentation/routers/phonation.py` | Endpoints HTTP, mapeo de errores y traducción a esquemas de respuesta. |
+| Schemas | `backend/app/presentation/schemas/phonation.py` | Contratos Pydantic v2 de entrada y salida; validación de rangos y consistencia. |
+| Use cases | `backend/app/use_cases/phonation/sessions.py` | Persistencia y consultas; orquesta la transacción multi-tabla. |
+| Entidades | `backend/app/domain/entities/session.py`, `phonation_metrics.py`, `phonation_session_exercise.py` | Modelo SQLAlchemy del esquema uniforme. |
 
 ## 3. Modelo de datos
 
-### Tabla `phonation_sessions`
+Una sesión de fonación se representa con tres filas relacionadas en el esquema uniforme.
 
-Almacena las sesiones de fonación completadas por los usuarios.
+### `sessions` (raíz, compartida con todos los módulos)
+
+Una fila por sesión. Para fonación standalone, `module='phonation'` y `parent_id=NULL`. Cuando la sesión sea parte de una sesión live (futuro módulo `live`), `parent_id` apuntará a la fila de tipo `live`.
+
+Columnas relevantes para fonación:
+
+- `id UUID PK`
+- `user_id UUID FK users(id) ON DELETE CASCADE`
+- `module module_enum NOT NULL` (`phonation`)
+- `parent_id UUID NULL FK sessions(id) ON DELETE CASCADE`
+- `started_at TIMESTAMPTZ NOT NULL`
+- `ended_at TIMESTAMPTZ NOT NULL` (siempre presente porque al postear la sesión ya está completa)
+- `duration_ms INT NOT NULL` (derivado por backend desde `ended_at - started_at`)
+- `score SMALLINT 0-100`
+- `status session_status_enum NOT NULL` (`completed` para sesiones posteadas; `aborted` queda reservado para el orquestador live)
+
+### `phonation_metrics` (1:1 con `sessions`)
+
+Métricas agregadas de la sesión.
 
 | Columna | Tipo | Restricciones | Descripción |
 |---------|------|---------------|-------------|
-| `id` | UUID | PRIMARY KEY | Identificador único de la sesión. |
-| `user_id` | UUID | FOREIGN KEY → `users.id` ON DELETE CASCADE | Usuario que realizó la sesión. |
-| `overall_score` | NUMERIC(5,2) | NOT NULL | Puntuación general de la sesión (0 a 100). |
-| `avg_hz` | NUMERIC(8,2) | NOT NULL | Frecuencia promedio (Hz) detectada en la sesión. |
-| `observations` | JSONB | NOT NULL | Lista de observaciones o notas generadas durante la sesión. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Fecha y hora de creación de la sesión. |
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1 con la fila de `sessions`. |
+| `avg_hz` | NUMERIC(8,2) | NOT NULL | Frecuencia promedio en Hz de toda la sesión. |
+| `stability_score` | SMALLINT | NOT NULL, CHECK 0-100 | Estabilidad agregada (0-100). |
+| `breaks_count` | INT | NOT NULL DEFAULT 0 | Total de quiebres vocales detectados. |
+| `exercises_count` | INT | NOT NULL DEFAULT 0 | Cantidad de ejercicios incluidos en la sesión. |
 
-**Relación:** una `phonation_session` tiene muchos `exercise_results`.
+### `phonation_session_exercises` (N:1 con `sessions`)
 
-### Tabla `exercise_results`
-
-Almacena los resultados individuales de cada ejercicio dentro de una sesión de fonación.
+Una fila por tipo de ejercicio dentro de la sesión. Permite agregados longitudinales por `exercise_type` (ej. evolución de estabilidad en `gliding` a lo largo del tiempo).
 
 | Columna | Tipo | Restricciones | Descripción |
 |---------|------|---------------|-------------|
-| `id` | UUID | PRIMARY KEY | Identificador único del resultado del ejercicio. |
-| `session_id` | UUID | FOREIGN KEY → `phonation_sessions.id` ON DELETE CASCADE | Sesión a la que pertenece este resultado. |
-| `exercise_id` | VARCHAR(50) | NOT NULL | Identificador del tipo de ejercicio (ej: "resonancia_01"). |
-| `exercise_type` | VARCHAR(20) | NOT NULL | Categoría del ejercicio: "resonancia", "estabilidad", "rango_tono". |
-| `avg_hz` | NUMERIC(8,2) | NOT NULL | Frecuencia promedio (Hz) capturada en este ejercicio. |
-| `stability` | NUMERIC(5,2) | NOT NULL | Métrica de estabilidad vocal (0 a 100). |
-| `breaks` | INTEGER | NOT NULL | Cantidad de quiebres vocales detectados. |
-| `in_range` | BOOLEAN | NOT NULL | Indica si la voz estuvo dentro del rango esperado para el ejercicio. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Fecha y hora de creación del resultado. |
+| `session_id` | UUID | PK compuesta + FK `sessions.id` ON DELETE CASCADE | Sesión a la que pertenece. |
+| `exercise_type` | exercise_type_enum | PK compuesta | `holding` o `gliding`. PK compuesta `(session_id, exercise_type)` evita duplicados. |
+| `avg_hz` | NUMERIC(8,2) | NOT NULL | Frecuencia promedio del ejercicio. |
+| `stability_score` | SMALLINT | NOT NULL, CHECK 0-100 | Estabilidad del ejercicio. |
+| `breaks_count` | INT | NOT NULL DEFAULT 0 | Quiebres del ejercicio. |
+| `in_range_pct` | SMALLINT | NOT NULL, CHECK 0-100 | Porcentaje de tiempo dentro del rango objetivo. |
 
-**Relación:** muchos `exercise_results` pertenecen a una `phonation_session`.
+### Decisiones de diseño
 
-### Migración
-
-La creación de estas tablas se define en la migración `0c400000111e_initial_schema.py`. Las restricciones de clave foránea con `ON DELETE CASCADE` garantizan que la eliminación de un usuario o sesión elimine automáticamente sus registros asociados.
+- **Sin `observations`**: el campo `observations JSONB` del esquema viejo se descartó intencionalmente. Era texto libre sin estructura aprovechable analíticamente.
+- **Sin `exercise_id`**: se eliminó el identificador puntual del ejercicio. El catálogo de ejercicios variaba poco y no se usaba en queries longitudinales; lo que sí tenía valor era el tipo (`holding` / `gliding`), que ahora vive como enum.
+- **`in_range` ahora es `in_range_pct` (0-100)** en vez de `boolean`. Captura la calidad real del ejercicio, no solo si pasó el umbral.
+- **PK compuesta `(session_id, exercise_type)`** en `phonation_session_exercises`: garantiza una sola fila por tipo dentro de una sesión. Si en el futuro se permite repetir un ejercicio en la misma sesión, hay que cambiar a una PK sintética.
+- **`duration_ms` derivado en backend**: el cliente envía `started_at` y `ended_at`; el backend calcula la duración. Evita confiar en valores derivables que el cliente podría falsear o desincronizar.
 
 ## 4. Esquemas de solicitud y respuesta
 
-Los esquemas definen los contratos entre el cliente y el servidor, incluida validación de tipos.
+### Entrada
 
-### `ExerciseResultRequest`
+`PhonationSessionCreate`:
 
-Representa un resultado individual de ejercicio que el frontend envía al backend.
+| Campo | Tipo | Reglas |
+|-------|------|--------|
+| `started_at` | datetime | Debe ser `< ended_at`. |
+| `ended_at` | datetime | — |
+| `score` | int | 0-100. |
+| `metrics` | `PhonationMetricsInput` | Ver abajo. |
+| `exercises` | list[`PhonationExerciseInput`] | Mínimo 1, sin `exercise_type` repetido. `metrics.exercises_count` debe igualar `len(exercises)`. |
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `exercise_id` | str | Identificador del ejercicio. |
-| `exercise_type` | str | Tipo: "resonancia", "estabilidad", "rango_tono". |
-| `avg_hz` | float | Frecuencia promedio en Hz. |
-| `stability` | float | Estabilidad (0-100). |
-| `breaks` | int | Número de quiebres. |
-| `in_range` | bool | Si la voz estuvo en el rango objetivo. |
+`PhonationMetricsInput`: `avg_hz` (>0), `stability_score` (0-100), `breaks_count` (>=0), `exercises_count` (>=1).
 
-### `PhonationSessionRequest`
+`PhonationExerciseInput`: `exercise_type` (`"holding"` o `"gliding"`), `avg_hz` (>0), `stability_score` (0-100), `breaks_count` (>=0), `in_range_pct` (0-100).
 
-Representa una sesión completa de fonación con todos sus ejercicios.
+### Salida
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `overall_score` | float | Puntuación general (0-100). |
-| `avg_hz` | float | Frecuencia promedio de la sesión. |
-| `observations` | list[str] | Notas o comentarios. |
-| `exercises` | list[ExerciseResultRequest] | Lista de ejercicios realizados. |
+`PhonationSessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`, `exercises`.
 
-### `PhonationSessionResponse`
-
-Respuesta serializada de una sesión completa con todos sus ejercicios. Incluye los mismos campos que el request más `id`, `created_at` y `exercises` como lista de `ExerciseResultResponse`.
-
-### `PhonationSessionListItem`
-
-Respuesta compacta para listar sesiones sin detalles de ejercicios.
-
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `id` | UUID | Identificador de la sesión. |
-| `overall_score` | float | Puntuación general. |
-| `avg_hz` | float | Frecuencia promedio. |
-| `created_at` | datetime | Fecha de creación. |
+`PhonationSessionListItem` (compacto): `id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `avg_hz`. Suficiente para renderizar una tarjeta de timeline sin pegarle al endpoint de detalle.
 
 ## 5. Casos de uso
 
-Los casos de uso orquestan la persistencia y consulta de datos. Se implementan en `backend/app/use_cases/phonation/sessions.py`.
+### `create_phonation_session(db, user, payload)`
 
-### `save_phonation_session(data, user, session)`
+Inserta tres filas en una sola transacción:
 
-Persiste una nueva sesión de fonación con todos sus ejercicios asociados.
+1. Una fila en `sessions` con `module='phonation'`, `status='completed'`, `parent_id=NULL`, `duration_ms` derivado.
+2. Una fila en `phonation_metrics` (1:1) con las métricas agregadas.
+3. N filas en `phonation_session_exercises` (una por `exercise_type`).
 
-**Flujo de ejecución:**
-1. Crear una instancia de `PhonationSession` con los datos de `data` y asignar `user_id`.
-2. Ejecutar `session.flush()` para generar el identificador UUID de la sesión sin hacer commit.
-3. Ejecutar `session.refresh(phonation_session)` para sincronizar el objeto con la base de datos.
-4. Iterar sobre cada ejercicio en `data.exercises` y crear instancias de `ExerciseResult` asociadas a la sesión.
-5. Ejecutar `session.commit()` para persistir todas las operaciones.
-6. Ejecutar `session.refresh(phonation_session)` para cargar los ejercicios asociados.
-7. Retornar la instancia de `PhonationSession` completamente poblada.
+Si cualquier insert falla, la transacción se hace rollback completa. Retorna la tupla `(session_row, metrics_row, exercise_rows)` lista para mapear a la respuesta.
 
-### `list_phonation_sessions(user, session)`
+### `list_phonation_sessions(db, user)`
 
-Consulta todas las sesiones de fonación del usuario autenticado, ordenadas por `created_at` descendente.
+Hace JOIN entre `sessions` y `phonation_metrics`, filtra `module='phonation'` y `parent_id IS NULL` (excluye las que son hijas de un live), ordena por `started_at DESC`. El filtro por `parent_id` es clave: las sesiones nested en un live se exponen a través del histórico del módulo `live`, no del de fonación.
 
-### `get_phonation_session(session_id, user, session)`
+### `get_phonation_session(db, user, session_id)`
 
-Consulta una sesión específica y sus ejercicios. Usa `selectinload(exercise_results)` para carga eficiente. Valida que `user_id` de la sesión coincida con el del usuario autenticado.
+Detalle completo. Carga la sesión, valida ownership comparando `user_id`, luego carga `phonation_metrics` y los `phonation_session_exercises` ordenados por `exercise_type`. Retorna `None` si no existe **o** si pertenece a otro usuario; el router mapea `None` a HTTP 404 sin distinguir entre ambos casos para no filtrar información de existencia.
 
-**Errores posibles:**
-- `NotFoundException` si la sesión no existe.
-- `UnauthorizedException` si el usuario no es propietario.
+## 6. Endpoints
 
-## 7. Endpoints de la API
-
-### POST `/phonation/sessions`
+### `POST /phonation/sessions`
 
 Crea una nueva sesión de fonación.
 
-- **Método:** POST
-- **Autenticación:** Bearer token requerido
-- **Código de respuesta:** 201 Created
-- **Body:** `PhonationSessionRequest`
-- **Respuesta:** `PhonationSessionResponse`
+- Auth: Bearer JWT.
+- Status: `201 Created`.
+- Body: `PhonationSessionCreate`.
+- Respuesta: `PhonationSessionDetail`.
+- Errores:
+  - `401` token ausente o inválido.
+  - `422` validación fallida (rangos, `ended_at <= started_at`, `exercises_count` inconsistente, `exercise_type` duplicado, lista vacía).
 
-**Errores:**
-- `401 Unauthorized` — Token ausente o inválido.
-- `422 Unprocessable Entity` — Validación fallida.
+### `GET /phonation/sessions`
 
----
+Histórico standalone del usuario.
 
-### GET `/phonation/sessions`
+- Auth: Bearer JWT.
+- Status: `200 OK`.
+- Respuesta: `list[PhonationSessionListItem]`, ordenado por `started_at DESC`.
+- Lista vacía si no hay sesiones.
 
-Lista todas las sesiones del usuario autenticado en orden descendente.
+### `GET /phonation/sessions/{session_id}`
 
-- **Método:** GET
-- **Autenticación:** Bearer token requerido
-- **Código de respuesta:** 200 OK
-- **Respuesta:** `list[PhonationSessionListItem]`
+Detalle de una sesión.
 
-**Nota:** Retorna lista vacía si el usuario no tiene sesiones registradas.
+- Auth: Bearer JWT.
+- Status: `200 OK`.
+- Respuesta: `PhonationSessionDetail`.
+- Errores:
+  - `401` token ausente o inválido.
+  - `404` la sesión no existe o pertenece a otro usuario (no se distingue para no filtrar ownership).
 
----
+## 7. Pendientes en el roadmap
 
-### GET `/phonation/sessions/{session_id}`
-
-Retorna los detalles completos de una sesión específica con todos sus ejercicios.
-
-- **Método:** GET
-- **Autenticación:** Bearer token requerido
-- **Código de respuesta:** 200 OK
-- **Respuesta:** `PhonationSessionResponse`
-
-**Errores:**
-- `401 Unauthorized` — Token ausente o inválido.
-- `404 Not Found` — La sesión no existe.
-- `403 Forbidden` — La sesión existe pero pertenece a otro usuario.
+- **Composición en sesión live**: cuando se reescriba el módulo `live`, `create_phonation_session` debe aceptar un `parent_id` opcional para asociar la fila a la sesión live padre. En ese momento también el endpoint POST puede exponer `parent_id` o quedarse oculto y permitir que solo el orquestador live lo invoque internamente.
+- **Sesiones abortadas**: hoy el endpoint solo persiste `status='completed'`. Si se quiere registrar abandonos parciales en standalone, hay que agregar un endpoint `PATCH /phonation/sessions/{id}/abort` o similar.

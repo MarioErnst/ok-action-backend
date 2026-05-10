@@ -1,145 +1,125 @@
-# Módulo: Versatilidad Lingüística
+# Versatilidad Lingüística — Documentación Backend
 
-## Qué hace
+## 1. Descripción funcional
 
-Evalúa la **versatilidad lingüística** del usuario: qué tan variado es su vocabulario, si repite palabras de contenido o usa sinónimos, y la riqueza general de su léxico. La evaluación es íntegramente client-server: el cliente graba audio y lo sube al backend, el backend lo despacha a Gemini con un prompt afinado, y persiste solo las **métricas de desempeño** (no la transcripción ni el audio).
+El módulo de Versatilidad Lingüística entrena al usuario a usar vocabulario variado y rico al hablar. Tiene dos modos:
 
-Existe un único modo en este módulo: **guiado** — 3 preguntas predefinidas. El usuario responde una por una; cada respuesta se evalúa por separado y al final se promedian los puntajes.
+- **guided**: el backend selecciona N preguntas del catálogo `prompts`. El usuario responde una por una; cada round es evaluado contra la pregunta.
+- **free**: el usuario habla libremente sin pregunta asignada. Cada round es una grabación libre.
 
-> **Nota:** la evaluación de versatilidad sobre habla libre está integrada como dimensión `lex` del módulo Live Session (`live_session.py`). El service Gemini de este módulo se reutiliza desde allá. Ver `documentacion/modulos/sesion-libre.md`.
+El lifecycle es stateful como precision: start → N×evaluate → finalize|abandon.
 
-## Modelo y stack
+## 2. Capas del módulo
 
-- **Gemini 2.5 Flash** (`gemini-2.5-flash`) vía `google-genai==1.16.0`.
-- Audio multimodal directo: el cliente sube `audio/webm` (Chrome/Firefox) o `audio/mp4` (iOS Safari) y Gemini lo decodifica nativamente — no hay paso de transcripción intermedio.
-- **Structured output** vía `response_schema`: Gemini siempre devuelve JSON con la forma exacta que esperamos.
-- Modelo de datos en PostgreSQL, mismo patrón que el módulo `precision`.
+| Capa | Ubicación | Responsabilidad |
+|------|-----------|-----------------|
+| Router | `backend/app/presentation/routers/linguistic_versatility.py` | Endpoints HTTP del lifecycle, orquestación Gemini, mapeo de errores. |
+| Schemas | `backend/app/presentation/schemas/linguistic_versatility.py` | Contratos Pydantic v2 del request/response de cada paso. |
+| Use cases | `backend/app/use_cases/linguistic_versatility/sessions.py` | Lógica de negocio del lifecycle. |
+| Infra AI | `backend/app/infrastructure/ai/linguistic_versatility_gemini.py` | Cliente Gemini con dos prompts (guided/free). Schema devuelve INTEGER 0-100. |
+| Seed | `backend/app/infrastructure/db/seed.py` | Inserta 10 prompts iniciales (idempotente). |
+| Entidades | `backend/app/domain/entities/session.py`, `linguistic_versatility_metrics.py`, `linguistic_versatility_round.py`, `prompt.py` | Modelo SQLAlchemy del esquema uniforme. |
 
-## Arquitectura
+## 3. Modelo de datos
 
-```
-Frontend (MediaRecorder + RecordButton)
-  ▼ blob de audio (~250KB para 30s en mp4)
-  ▼
-POST /linguistic-versatility/sessions/{id}/rounds   (multipart)
-  ▼ valida UUID, tamaño <= 5MB, mime allow-list
-  ▼
-evaluate_versatility_response (use case)
-  ▼
-GeminiVersatilityService.evaluate_response(audio, mime, question_text)
-  ▼ Gemini retorna {versatility_score, vocabulary_richness, feedback, audio_intelligible}
-  ▼
-INSERT linguistic_versatility_rounds + UPDATE completed_rounds
-  ▼
-EvaluateRoundResponse → frontend
-```
+### `sessions` (raíz, compartida)
 
-## Endpoints
+Para linguistic_versatility standalone: `module='linguistic_versatility'`, `parent_id=NULL`. `status` evoluciona `active` → (`completed`|`aborted`).
 
-| Método | Path                                                   | Qué hace                                                 |
-|--------|--------------------------------------------------------|----------------------------------------------------------|
-| POST   | `/linguistic-versatility/sessions`                     | Abre sesión, selecciona 3 preguntas evitando recientes   |
-| POST   | `/linguistic-versatility/sessions/{id}/rounds`         | Sube audio de una respuesta y devuelve su evaluación     |
-| POST   | `/linguistic-versatility/sessions/{id}/finalize`       | Cierra la sesión y calcula `overall_score` (promedio)    |
-| PATCH  | `/linguistic-versatility/sessions/{id}/abandon`        | Marca la sesión como abandonada (idempotente)            |
-| GET    | `/linguistic-versatility/sessions/{id}`                | Detalle completo con todos los rounds                    |
-| GET    | `/linguistic-versatility/history`                      | Lista de sesiones del usuario, descendente por fecha     |
+### `linguistic_versatility_metrics` (1:1 con `sessions`)
 
-Todos requieren `Authorization: Bearer <token>`.
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `mode` | linguistic_versatility_mode_enum | NOT NULL DEFAULT `guided` | `guided` o `free`. |
+| `rounds_total` | INT | NOT NULL | Cantidad planeada al hacer start. |
+| `rounds_completed` | INT | NOT NULL DEFAULT 0 | Incrementa con cada `evaluate_round` exitoso. |
+| `vocabulary_richness_avg` | SMALLINT NULL | CHECK 0-100 | Promedio agregado al finalize. NULL si no hubo rounds inteligibles. |
 
-## Validación de payload
+### `linguistic_versatility_rounds` (N:1 con `sessions`)
 
-Schema Pydantic + chequeo en router:
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK compuesta + FK `sessions.id` ON DELETE CASCADE | Sesión a la que pertenece. |
+| `round_index` | SMALLINT | PK compuesta | Asignado por el cliente (0..N-1). |
+| `prompt_id` | UUID NULL | FK `prompts.id` ON DELETE RESTRICT | Requerido en guided, NULL en free. |
+| `score` | SMALLINT NULL | CHECK 0-100 | Versatility score del round. NULL si `is_audio_intelligible=false`. |
+| `vocabulary_richness` | SMALLINT NULL | CHECK 0-100 | Riqueza léxica del round. NULL si inintelegible. |
+| `is_audio_intelligible` | BOOLEAN | NOT NULL DEFAULT TRUE | Gemini decide. |
 
-| Campo                | Restricción                                          |
-|----------------------|------------------------------------------------------|
-| `audio` (upload)     | <= 5 MB; HTTP 413 si lo excede                       |
-| `audio.content_type` | Allow-list: `webm`, `mp4`, `ogg`, `wav`, `mpeg` (otros caen a `audio/webm`) |
-| `question_id`        | UUID válido + existe en DB; HTTP 404 si no            |
-| `versatility_score`  | int 0..100 en respuesta                              |
-| `vocabulary_richness`| int 1..3 (1=básico, 2=intermedio, 3=avanzado)        |
+Índice `ix_lex_rounds_prompt ON prompt_id` para análisis longitudinal por pregunta.
 
-## Prompt de Gemini
+### Decisiones de diseño
 
-Dos plantillas en `infrastructure/ai/linguistic_versatility_gemini.py`:
+- **Modo dual `guided` / `free`**: cubre dos UX distintos sin duplicar tablas. La diferencia se reduce a `prompt_id` NULLABLE + qué prompt template envía Gemini.
+- **`vocabulary_richness` cambió de 1/2/3 (Gemini viejo) a 0-100**: el JSON propuesta usa SMALLINT 0-100 para todos los `_pct`/`_score`. Actualicé la prompt y el `response_schema` de Gemini para que devuelva 0-100 directamente, evitando un mapping arbitrario en boundary. La banda conceptual sigue clara (0-33 básico, 34-66 intermedio, 67-100 avanzado).
+- **`score` por round = `versatility_score` de Gemini**: única métrica overall canónica. `score` por sesión al finalize = avg de rounds inteligibles.
+- **`vocabulary_richness_avg`** en metrics: avg de rounds inteligibles, calculado al finalize.
+- **`prompt_id` mode mismatch → 422**: en guided es obligatorio, en free debe omitirse. `PromptModeMismatchError` el use_case lanza, el router lo mapea.
+- **Invariantes de evaluate_round (lección de precision review)**:
+  - `round_index ∈ [0, rounds_total)` → `RoundIndexOutOfRangeError` → 422.
+  - Duplicate composite PK → catch IntegrityError → `RoundAlreadyEvaluatedError` → 409 (rollback evita doble-incremento de `rounds_completed`).
+- **Drops per JSON**: `transcript`, `feedback`, `strengths`, `improvement_areas`, `question_text`. Texto LLM o snapshot duplicado del catálogo.
+- **`abandon` idempotente** sobre aborted; 409 sobre completed.
+- **Validación dual de `prompt_id`** (sólo en guided): router fetch para obtener texto Gemini + use_case re-check como invariante.
 
-- `_GUIDED_PROMPT_TEMPLATE`: incluye la pregunta. Define `versatility_score` (variedad léxica 0-100), `vocabulary_richness` (1-3), `feedback` (1-2 oraciones específicas, en rioplatense, citando palabra repetida + sinónimo), y `audio_intelligible` (false en caso de silencio/ruido).
-- `_FREE_PROMPT_TEMPLATE`: igual estructura pero para discurso libre sin pregunta.
+## 4. Esquemas
 
-Ambas instruyen explícitamente:
+### Start
 
-- Ignorar repeticiones de palabras de función (artículos, pronombres, conectores).
-- Penalizar solo repeticiones de palabras de contenido cuando hay sinónimos claros.
-- No penalizar por ruido de fondo o calidad de audio.
-- Devolver el feedback en español rioplatense (vos, no tú).
-- En caso de audio ininteligible, scores neutrales y mensaje fijo "No se pudo procesar el audio".
+`StartSessionRequest`: `mode` (`guided`|`free`) + `rounds_total` (1-20).
 
-## Tablas
+`StartSessionResponse`: `session_id`, `started_at`, `mode`, `rounds_total`, `prompts` (lista vacía en free).
 
-### `linguistic_versatility_questions`
+### Evaluate per round
 
-| Columna           | Tipo        | Descripción                                |
-|-------------------|-------------|--------------------------------------------|
-| id                | UUID PK     |                                            |
-| text              | TEXT        | Texto de la pregunta                       |
-| category          | VARCHAR(100)| `personal_experience`, `persuasion`, etc.  |
-| difficulty_level  | VARCHAR(20) | `basic`, `intermediate`, `advanced`        |
-| is_active         | BOOLEAN     | `false` para deprecar sin perder histórico |
-| created_at        | TIMESTAMPTZ |                                            |
+Multipart: `audio` (UploadFile), `round_index` (>=0), `prompt_id` (UUID opcional, requerido en guided).
 
-Seed: 3 preguntas iniciales en la migración (categorías `personal_experience`, `persuasion`, `speculative`).
+`EvaluateRoundResponse`: `round_index`, `prompt_id?`, `is_audio_intelligible`, `score?` (0-100), `vocabulary_richness?` (0-100), `feedback` (Gemini, ephemeral).
 
-### `linguistic_versatility_sessions`
+### Finalize
 
-| Columna           | Tipo        | Descripción                                          |
-|-------------------|-------------|------------------------------------------------------|
-| id                | UUID PK     |                                                      |
-| user_id           | UUID FK     | CASCADE on user delete                               |
-| mode              | VARCHAR(20) | `guided` o `free`                                    |
-| total_rounds      | INTEGER     | 3 para guided, 1 para free                           |
-| completed_rounds  | INTEGER     | Rounds con audio inteligible                         |
-| overall_score     | INTEGER NULL| Promedio de versatility_score; NULL si sin rounds OK |
-| status            | VARCHAR(20) | `active`, `completed`, `abandoned`                   |
-| created_at        | TIMESTAMPTZ |                                                      |
-| completed_at      | TIMESTAMPTZ NULL | Set en finalize/abandon                         |
+`FinalizeSessionResponse`: `session_id`, `status` (`completed`), `score?`, `rounds_completed`, `rounds_total`, `vocabulary_richness_avg?`.
 
-### `linguistic_versatility_rounds`
+### Detail / List
 
-| Columna             | Tipo         | Descripción                                       |
-|---------------------|--------------|---------------------------------------------------|
-| id                  | UUID PK      |                                                   |
-| session_id          | UUID FK      | CASCADE                                           |
-| question_id         | UUID FK NULL | NULL en modo free                                 |
-| question_text       | TEXT NULL    | Snapshot del texto de la pregunta                 |
-| versatility_score   | INTEGER NULL | 0..100; NULL si audio no inteligible              |
-| vocabulary_richness | INTEGER NULL | 1..3; NULL si audio no inteligible                |
-| feedback            | TEXT NULL    | Texto devuelto por Gemini                         |
-| audio_intelligible  | BOOLEAN      | `false` cuando Gemini no pudo procesar            |
-| created_at          | TIMESTAMPTZ  |                                                   |
+`LinguisticVersatilityRoundOutput`: round_index, prompt_id?, score?, vocabulary_richness?, is_audio_intelligible.
 
-Índice: `ix_linguistic_versatility_rounds_session_id` para joins por sesión.
+`LinguisticVersatilityMetricsOutput`: mode, rounds_total, rounds_completed, vocabulary_richness_avg?.
 
-## Manejo de errores
+`LinguisticVersatilitySessionDetail`: id, user_id, started_at, ended_at?, duration_ms?, score?, status, created_at, metrics, rounds.
 
-- **Gemini falla** → `VersatilityGeminiError` → router responde 502 con el mensaje + rollback de la transacción.
-- **Audio > 5 MB** → 413 antes de tocar Gemini (no quemamos tokens en payloads basura).
-- **UUID inválido en question_id o session_id** → 404 (no 500).
-- **Sesión inexistente o de otro usuario** → 404 (sin distinción para no leakear existencia).
-- **Excepción genérica** durante save → rollback explícito + re-raise.
+`LinguisticVersatilitySessionListItem`: id + timeline meta + mode + counts + vocabulary_richness_avg?.
 
-## Decisiones de diseño
+## 5. Casos de uso (`sessions.py`)
 
-### Por qué Gemini multimodal en lugar de Whisper + LLM
-Una sola llamada en lugar de dos servicios distintos. Gemini 2.5 Flash es competitivo en transcripción y análisis combinado, y ya está integrado en otros módulos. Reduce latencia y operación.
+- `start_linguistic_versatility_session(db, user, mode, rounds_total)`: crea sesión + metrics; si guided, pickup N prompts del catálogo (sino `NotEnoughPromptsError` → 503). En free, prompts=[].
+- `evaluate_round(db, user, session_id, round_index, prompt_id, gemini_evaluation)`: valida sesión activa + round_index bounds + prompt-mode pairing + prompt válido (si guided), persiste round con scores derivados, incrementa rounds_completed. Mapea PK violation a `RoundAlreadyEvaluatedError`.
+- `finalize_linguistic_versatility_session(db, user, session_id)`: agrega scores, marca completed, computa duration_ms.
+- `abandon_linguistic_versatility_session(db, user, session_id)`: marca aborted; idempotente sobre aborted, falla sobre completed.
+- `list_linguistic_versatility_sessions(db, user)`: timeline con todas las status, filter `parent_id IS NULL`.
+- `get_linguistic_versatility_session(db, user, session_id)`: detalle. None para no-encontrado o cross-user → 404.
 
-### Por qué `vocabulary_richness` como int
-Permite agregaciones (promedio, modo) en analytics sin parsear strings, mantiene la columna pequeña, y el frontend mapea a labels traducidos en una constante (`{1: 'Básico', 2: 'Intermedio', 3: 'Avanzado'}`).
+### Helper privado
 
-### Por qué no guardamos transcripción
-Privacidad y storage. El usuario obtiene el feedback inmediato en pantalla; persistir el texto crudo aporta poco valor frente al riesgo de exponer contenido sensible.
+- `_load_active_session(db, user, session_id) -> (Session, Metrics)`: carga + valida ownership + status, lanza excepciones tipadas.
 
-### Por qué guardar rounds aunque sean ininteligibles
-La sesión queda completa en el historial; el usuario ve qué intentó. Solo no incrementan `completed_rounds`, así no se cuenta hacia el promedio del puntaje final.
+## 6. Endpoints
 
-### Por qué selección de preguntas evita las recientes
-Un usuario que practica diariamente no debería ver las mismas 3 preguntas todas las veces. Se filtran las usadas en sus últimas N sesiones; si no hay suficientes "frescas", cae a cualquier activa.
+- `POST /linguistic-versatility/sessions` → 201 / 503.
+- `POST /linguistic-versatility/sessions/{id}/rounds` — multipart audio + round_index + prompt_id?. → 200 / 404 / 409 (sesión no activa o round ya evaluado) / 422 (round bounds, mode mismatch, prompt inválido) / 502 (Gemini).
+- `POST /linguistic-versatility/sessions/{id}/finalize` → 200 / 404 / 409.
+- `PATCH /linguistic-versatility/sessions/{id}/abandon` → 204 / 404 / 409.
+- `GET /linguistic-versatility/sessions` → 200 lista todas las status.
+- `GET /linguistic-versatility/sessions/{id}` → 200 / 404.
+
+URL kebab (`/linguistic-versatility`) por convención web; el module enum interno sigue snake.
+
+Todos los endpoints requieren Bearer JWT.
+
+## 7. Pendientes en el roadmap
+
+- **Composición en sesión live**: `start_linguistic_versatility_session` debe aceptar `parent_id` opcional cuando lo invoque el orquestador del módulo `live`.
+- **Anti-repetición de prompts** (guided): el viejo código no excluía recientes; podría agregarse un join contra rounds del usuario en sesiones recientes. Defer mientras el catálogo sea pequeño.
+- **MIME allowlist unificada**: igual que precision/pronunciation/accentuation/muletillas.
+- **Cache efímera de feedback Gemini**: hoy solo vive en la respuesta inmediata.

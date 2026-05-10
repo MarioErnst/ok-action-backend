@@ -1,55 +1,111 @@
+from __future__ import annotations
+
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.pause_session import PauseSession
+from app.domain.entities.enums import ModuleEnum, SessionStatusEnum
+from app.domain.entities.pause_metrics import PauseMetrics
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
+from app.presentation.schemas.pauses import PauseSessionCreate
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
-async def save_pause_session(
-    data: dict,
+async def create_pause_session(
+    db: AsyncSession,
     user: User,
-    session: AsyncSession,
-) -> PauseSession:
-    metrics = data["pause_metrics"]
-    pause_session = PauseSession(
+    payload: PauseSessionCreate,
+) -> tuple[Session, PauseMetrics]:
+    """Persist a completed pauses session as one transaction.
+
+    Inserts the root sessions row and the 1:1 pause_metrics row. duration_ms
+    is derived server-side from the time range. Score comes from the client
+    because pauses scoring is a composite of count, total duration and
+    silence ratio that the frontend computes.
+    """
+
+    if payload.parent_id is not None:
+        await validate_parent_live_session(db, user, payload.parent_id)
+
+    duration_ms = int((payload.ended_at - payload.started_at).total_seconds() * 1000)
+
+    session_row = Session(
         user_id=user.id,
-        prompt_text=data["prompt_text"],
-        duration_ms=data["duration_ms"],
-        total_pauses=metrics["total_pauses"],
-        total_pause_duration_ms=metrics["total_pause_duration_ms"],
-        average_pause_ms=metrics["average_pause_ms"],
-        longest_pause_ms=metrics["longest_pause_ms"],
-        silence_ratio=metrics["silence_ratio"],
-        classification=metrics["classification"],
-        pauses=[pause for pause in metrics["pauses"]],
+        module=ModuleEnum.pauses,
+        parent_id=payload.parent_id,
+        started_at=payload.started_at,
+        ended_at=payload.ended_at,
+        duration_ms=duration_ms,
+        score=payload.score,
+        status=SessionStatusEnum.completed,
     )
-    session.add(pause_session)
-    await session.commit()
-    await session.refresh(pause_session)
-    return pause_session
+    db.add(session_row)
+    await db.flush()
+
+    metrics_row = PauseMetrics(
+        session_id=session_row.id,
+        pauses_count=payload.metrics.pauses_count,
+        total_pause_ms=payload.metrics.total_pause_ms,
+        longest_pause_ms=payload.metrics.longest_pause_ms,
+        silence_pct=payload.metrics.silence_pct,
+    )
+    db.add(metrics_row)
+
+    await db.commit()
+    await db.refresh(session_row)
+    await db.refresh(metrics_row)
+    return session_row, metrics_row
 
 
 async def list_pause_sessions(
-    user: User,
-    session: AsyncSession,
-) -> list[PauseSession]:
-    result = await session.execute(
-        select(PauseSession)
-        .where(PauseSession.user_id == user.id)
-        .order_by(PauseSession.created_at.desc())
+    db: AsyncSession, user: User
+) -> list[tuple[Session, PauseMetrics]]:
+    """Timeline of completed standalone pauses sessions for a user.
+
+    parent_id IS NULL excludes sessions that belong to a live composition;
+    those should be exposed through the live module's history.
+    """
+
+    query = (
+        select(Session, PauseMetrics)
+        .join(PauseMetrics, PauseMetrics.session_id == Session.id)
+        .where(
+            Session.user_id == user.id,
+            Session.module == ModuleEnum.pauses,
+            Session.parent_id.is_(None),
+        )
+        .order_by(Session.started_at.desc())
     )
-    return list(result.scalars().all())
+    result = await db.execute(query)
+    return list(result.all())
 
 
 async def get_pause_session(
-    session_id: str,
-    user: User,
-    session: AsyncSession,
-) -> PauseSession | None:
-    result = await session.execute(
-        select(PauseSession).where(
-            PauseSession.id == session_id,
-            PauseSession.user_id == user.id,
+    db: AsyncSession, user: User, session_id: UUID
+) -> tuple[Session, PauseMetrics] | None:
+    """Detail of one pauses session owned by the given user.
+
+    Returns None when the session does not exist or belongs to another user;
+    the router maps that to HTTP 404 to avoid leaking ownership information.
+    """
+
+    session_result = await db.execute(
+        select(Session).where(
+            Session.id == session_id,
+            Session.module == ModuleEnum.pauses,
         )
     )
-    return result.scalar_one_or_none()
+    session_row = session_result.scalar_one_or_none()
+    if session_row is None or session_row.user_id != user.id:
+        return None
+
+    metrics_result = await db.execute(
+        select(PauseMetrics).where(PauseMetrics.session_id == session_id)
+    )
+    metrics_row = metrics_result.scalar_one_or_none()
+    if metrics_row is None:
+        return None
+
+    return session_row, metrics_row

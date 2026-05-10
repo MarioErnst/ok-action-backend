@@ -1,160 +1,120 @@
-# Módulo de Fluidez — Backend
+# Fluidez — Documentación Backend
 
 ## 1. Descripción funcional
 
-El módulo de Fluidez evalúa la continuidad del habla de un usuario mientras responde una consigna. Su foco principal es detectar disrupciones del flujo verbal: bloqueos, repeticiones, reinicios de frase, pausas largas que cortan ideas y ritmo poco natural.
+El módulo de Fluidez evalúa la continuidad del habla del usuario en tiempo real mientras responde a una consigna. Es **el primer módulo basado en WebSocket** del producto: el cliente abre un canal full-duplex, manda audio en streaming, y el backend lo analiza por segmentos cada 5 segundos llamando a Gemini.
 
-La evaluación también verifica concordancia con la consigna. Esto evita marcar como buen intento una respuesta fluida pero fuera de tema. La fluidez se evalúa como calidad comunicativa del intento, no solo como velocidad al hablar.
+Flujo:
 
-El sistema entrega feedback en tiempo real mediante WebSocket. Cuando detecta problemas relevantes, envía advertencias visuales al frontend sin cortar inmediatamente la grabación.
+1. Cliente abre WS en `/fluency/session?token=<jwt>`.
+2. Cliente envía `{type: "start", prompt_text: "..."}` (timeout: 10s).
+3. Backend responde `{type: "ready"}`.
+4. Cliente streamea bytes de audio (PCM 16k mono).
+5. Cada 5s backend llama Gemini con el chunk acumulado, manda `{type: "analysis", data}` y eventualmente `{type: "warning", reason, data}`.
+6. Cliente termina con `{type: "end"}`, o se desconecta, o se alcanza el límite (120s).
+7. Backend persiste 1 fila en `sessions` + 1 en `fluency_metrics` agregando todas las analyses, manda `{type: "session_ended", reason, average_score, session_id}` y cierra.
 
 ## 2. Capas del módulo
 
 | Capa | Ubicación | Responsabilidad |
 |------|-----------|-----------------|
-| **Router** | `backend/app/presentation/routers/fluency.py` | Gestiona el WebSocket `/fluency/session`, autenticación, buffer de audio y ciclo de análisis. |
-| **Prompt Builder** | `backend/app/use_cases/fluency/prompt_builder.py` | Construye instrucciones para Gemini incluyendo consigna, verificaciones previas y criterios de evaluación. |
-| **Session Manager** | `backend/app/use_cases/fluency/session_manager.py` | Mantiene estado en memoria, calcula promedio y decide cuándo emitir advertencias. |
-| **Servicio IA** | `backend/app/infrastructure/ai/fluency_gemini.py` | Envía audio PCM a Gemini y exige una respuesta JSON estructurada. |
-| **Tests** | `backend/tests/test_fluency.py` | Cubre prompt y reglas de advertencia. |
+| Router | `backend/app/presentation/routers/fluency.py` | WebSocket lifecycle + endpoints HTTP de history. Persistencia al cierre. |
+| Schemas | `backend/app/presentation/schemas/fluency.py` | Contratos Pydantic v2 de los endpoints HTTP. El protocolo WS usa JSON arbitrario. |
+| Use cases | `backend/app/use_cases/fluency/sessions.py`, `session_manager.py`, `prompt_builder.py` | Persistencia + agregación + estado en memoria de la sesión + construcción del prompt Gemini. |
+| Infra AI | `backend/app/infrastructure/ai/fluency_gemini.py` | Cliente Gemini con schema endurecido (scores INTEGER). |
+| Entidades | `backend/app/domain/entities/session.py`, `fluency_metrics.py` | Modelo SQLAlchemy del esquema uniforme. |
 
 ## 3. Modelo de datos
 
-Actualmente Fluidez no persiste sesiones en PostgreSQL. El estado vive en memoria durante la conexión WebSocket.
+### `sessions` (raíz, compartida)
 
-Al finalizar, el backend envía `average_score` al cliente, pero no guarda historial. Si se agrega persistencia futura, debería crearse una tabla propia para intentos de fluidez en lugar de mezclarla con `live_sessions`.
+Para fluency standalone: `module='fluency'`, `parent_id=NULL`. **Solo se inserta la fila al cierre del WS** (a diferencia de precision/linguistic_versatility que abren la fila como `active`).
 
-## 4. Esquemas de solicitud y respuesta
+`status`: `completed` si terminó normal (`user_ended` o `time_limit`), `aborted` si hubo disconnect/error.
 
-### Inicio de sesión
+`score` derivado = avg de `score` overall de cada analysis Gemini.
 
-Mensaje cliente → servidor:
+### `fluency_metrics` (1:1 con `sessions`)
 
-```json
-{
-  "type": "start",
-  "prompt_text": "Describe una experiencia en la que tuviste que explicar una idea compleja."
-}
-```
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `fluency_score` | SMALLINT | NOT NULL, CHECK 0-100 | Avg de `fluency_score` de cada analysis. |
+| `stuck_events_count` | INT | NOT NULL DEFAULT 0 | Suma de `len(stuck_events) + repetitions + restarts + long_blocks` cross analyses. Definición ampliada de "stuck". |
+| `words_per_minute` | NUMERIC(6,2) | NOT NULL DEFAULT 0 | Avg de `wpm` por analysis. |
 
-### Análisis de segmento
+### Decisiones de diseño
 
-Mensaje servidor → cliente:
+- **Persistencia solo al cierre**: el JSON propuesta dice "Persistir al cierre `session_ended`: 1 fila en `sessions` + 1 en `fluency_metrics`. Sin tabla hija." A diferencia de precision/linguistic_versatility, fluency no inserta al inicio; si el cliente se conecta y se desconecta sin grabar, no queda fila en BD. Mantiene la tabla limpia de sesiones vacías.
+- **`analyses` JSONB eliminado** (vivía en `live_sessions.analyses` viejo): texto de cada chunk Gemini sin valor longitudinal. Solo agregados.
+- **Drops LLM**: `feedback`/`fb`, `strengths`, `improvement_areas`, `pace_feedback`, `transcript`. Llegan al cliente en cada `{type: "analysis"}` para UI en vivo, no se persisten.
+- **`stuck_events_count` interpretación amplia** = stuck_events + repetitions + restarts + long_blocks. Matchea la definición que el OLD `evaluate_attention` usaba para emitir warnings; mantiene el significado al usuario constante.
+- **`score` (sessions) = avg de `score` overall por analysis**, NO igual a `fluency_score` (que es el sub-score específico de continuidad). Frontend muestra ambos en distintos contextos.
+- **`words_per_minute` = avg simple por analysis**, no ponderado por duración del chunk. Los chunks tienen tamaño consistente (5s) por la cadencia del timer; el sesgo es despreciable. Si en el futuro el timer cambia a chunks variables, considerar weighted avg.
+- **Sin `stop_reason` persistido**: el JSON solo lo incluye en `live_metrics`. Para fluency, mapeamos a `status` y descartamos el specific reason. Si en el futuro se quiere distinguir time_limit vs user_ended en analytics, agregar columna.
+- **Empty session policy**: si el WS terminó sin ninguna analysis (cliente abrió y cerró), `persist_fluency_session` retorna None y no escribe nada. El `session_ended` enviado al cliente lleva `session_id: null`.
+- **Schema Gemini endurecido**: 6 score fields cambiados de `"number"` a `"integer"` preemptive (lección compartida desde precision/accentuation reviews).
+- **Auth WS**: el token JWT viene en query string (los WS browser no soportan headers custom durante el handshake). `authenticate_ws` valida sin levantar excepción HTTP — retorna user|None y el handler cierra con código 4001 si None.
+- **Sesión de DB private para auth y persist**: el WS lifecycle es largo; usar `get_session` request-scoped la mantendría abierta minutos. En vez, abrimos `async_session_factory()` en context manager solo para la auth y luego para la persistencia final, sin tocar DB durante el streaming.
 
-```json
-{
-  "type": "analysis",
-  "data": {
-    "audio_intelligible": true,
-    "score": 84,
-    "fluency_score": 86,
-    "continuity_score": 82,
-    "rhythm_score": 80,
-    "prompt_alignment_score": 90,
-    "coherence_score": 84,
-    "classification": "fluidez_buena",
-    "stuck_events": [
-      {"word": "migración", "count": 2, "ctx": "la migración, migración de datos"}
-    ],
-    "repetitions": 1,
-    "restarts": 0,
-    "long_blocks": 0,
-    "wpm": 124,
-    "pace_feedback": "Ritmo estable, con una pausa natural antes de la idea principal.",
-    "strengths": ["Mantiene una idea central clara", "Ritmo comprensible"],
-    "improvement_areas": ["Evitar repetir palabras al iniciar una explicación"],
-    "fb": "La respuesta mantiene buena continuidad y responde la consigna. Cuida las repeticiones al introducir conceptos importantes."
-  }
-}
-```
+## 4. Esquemas
 
-### Advertencia
+### Salida HTTP
 
-Mensaje servidor → cliente:
+`FluencyMetricsOutput`: `fluency_score`, `stuck_events_count`, `words_per_minute` (float).
 
-```json
-{
-  "type": "warning",
-  "reason": "not_aligned_with_prompt",
-  "data": { "...": "analysis" }
-}
-```
+`FluencySessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`.
 
-Razones posibles:
+`FluencySessionListItem` (compacto): `id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `fluency_score`, `words_per_minute`. Trae las dos métricas más informativas para una card de timeline.
 
-| Reason | Descripción |
-|--------|-------------|
-| `audio_not_intelligible` | Hay voz, pero no se entiende suficiente para evaluar. |
-| `not_aligned_with_prompt` | La respuesta no concuerda con la consigna. |
-| `low_fluency_score` | El score global baja de 70. |
-| `fluency_blocks_detected` | Hay 3 o más eventos negativos en el segmento. |
-| `time_limit` | La sesión llegó al máximo de 120 segundos. |
+### Protocolo WS (JSON arbitrario, no schemas Pydantic)
+
+Cliente → servidor:
+- `{"type": "start", "prompt_text": "..."}`
+- bytes (audio)
+- `{"type": "end"}`
+
+Servidor → cliente:
+- `{"type": "ready"}`
+- `{"type": "analysis", "data": {...}}` (cada 5s)
+- `{"type": "warning", "reason": "...", "data": {...}}` (si la heurística dispara)
+- `{"type": "session_ended", "reason": "user_ended|time_limit|...", "average_score": N|null, "session_id": UUID|null}`
 
 ## 5. Casos de uso
 
-### `build_fluency_prompt(prompt_text)`
+### `_aggregate_analyses(analyses)` — `sessions.py`
 
-Normaliza la consigna y construye un prompt con verificación previa obligatoria:
+Reduce la lista de chunks Gemini a `(score, fluency_score, stuck_events_count, words_per_minute)`. Si la lista está vacía retorna ceros (caller decide qué hacer).
 
-1. silencio o audio vacío;
-2. audio ininteligible;
-3. respuesta fuera de consigna;
-4. respuesta demasiado corta;
-5. evaluación completa solo si hay un intento claro.
+### `persist_fluency_session(db, user, started_at, ended_at, status, analyses)` — `sessions.py`
 
-El prompt separa métricas de fluidez, continuidad, ritmo, concordancia con la consigna y coherencia. Esto replica el patrón robusto de módulos como Precisión: primero valida si el audio se puede evaluar y luego asigna puntajes.
+Inserta `sessions(module='fluency')` + `fluency_metrics` 1:1 si hay analyses. Retorna None si no hay para no spam-ear historia con sesiones vacías.
 
-### `analyze_fluency_audio_segment(audio_bytes, prompt)`
+### `list_fluency_sessions(db, user)`, `get_fluency_session(db, user, session_id)` — `sessions.py`
 
-Envía audio PCM 16 kHz a Gemini con `response_mime_type="application/json"` y un schema cerrado. Retorna `None` si el segmento es demasiado corto, si Gemini falla o si la respuesta no puede parsearse.
+Patrón idéntico a otros módulos: JOIN session+metrics, filter `parent_id IS NULL`, 404 para no-encontrado o cross-user.
 
-Mientras no exista una capa Speech-to-Text dedicada, el módulo no muestra transcripción completa al usuario. Gemini puede estimar eventos y contexto breve, pero no se usa como fuente autoritativa de texto exacto.
+### `FluencySessionState` — `session_manager.py`
 
-### `FluencySessionState.evaluate_attention(analysis)`
+Estado en memoria de la WS session. Campos: `prompt_text`, `analyses` (lista cruda de chunks Gemini), `started_at`, `stop_reason`. Métodos: `evaluate_attention(analysis) -> (should_warn, reason)` para decidir warnings al cliente.
 
-Acumula el análisis y decide si debe emitirse una advertencia:
+### `build_fluency_prompt(prompt_text)` — `prompt_builder.py`
 
-1. `audio_intelligible=false` → `audio_not_intelligible`;
-2. tiempo máximo alcanzado → `time_limit`;
-3. `prompt_alignment_score < 70` → `not_aligned_with_prompt`;
-4. `score < 70` → `low_fluency_score`;
-5. eventos negativos acumulados del segmento ≥ 3 → `fluency_blocks_detected`.
+Construye el prompt Gemini insertando la consigna del usuario.
 
-## 6. Integración con Gemini AI
+## 6. Endpoints
 
-**Modelo:** `gemini-2.5-flash`
+- `WS /fluency/session?token=<jwt>` — protocolo descrito arriba. Códigos de cierre WS:
+  - 4001: Unauthorized (auth fallida)
+  - 4002: Expected start message (timeout o malformado)
+  - normal close: tras enviar `session_ended`.
+- `GET /fluency/sessions` → 200, lista standalone ordenada por `started_at DESC`. Bearer JWT.
+- `GET /fluency/sessions/{id}` → 200 / 404. Bearer JWT.
 
-**Entrada:** audio PCM 16 kHz mono y prompt de texto con la consigna.
+## 7. Pendientes en el roadmap
 
-**Criterios principales:**
-
-- no penalizar acento, dialecto ni calidad técnica si el habla es entendible;
-- no confundir muletillas leves con problemas de fluidez;
-- penalizar pausas solo cuando cortan la idea;
-- evaluar concordancia con la consigna para detectar respuestas fuera de tema;
-- devolver feedback accionable, fortalezas y áreas de mejora.
-
-## 7. Endpoints de la API
-
-### WS `/fluency/session`
-
-Establece una sesión WebSocket de práctica de fluidez.
-
-- **Autenticación:** token JWT en query param `?token=...`
-- **Inicio:** mensaje JSON `{"type":"start","prompt_text":"..."}`
-- **Audio:** frames binarios PCM 16 kHz mono
-- **Salida:** mensajes `ready`, `analysis`, `warning` y `session_ended`
-
-## 8. Integración con Sesión Libre
-
-Fluidez también puede seleccionarse como dimensión `"fluency"` en `/live/session`.
-
-En ese modo:
-
-1. El frontend incluye `"fluency"` dentro de `dims`.
-2. `live_session.py` valida la dimensión en `VALID_DIMS`.
-3. `prompt_builder.py` agrega una sección de análisis de fluidez para habla espontánea.
-4. `live_gemini.py` exige `dims.fluency` con score, clasificación, WPM, repeticiones, reinicios, bloqueos, feedback de ritmo y eventos detectados.
-5. El resultado se guarda dentro de `live_sessions.analyses`, no en una tabla propia.
-
-La diferencia principal es que el módulo standalone tiene consigna y puede medir `prompt_alignment_score`; sesión libre no tiene consigna fija, por lo que evalúa continuidad del habla espontánea.
+- **Composición en sesión live**: `persist_fluency_session` debe aceptar `parent_id` opcional cuando lo invoque el orquestador del módulo `live`. La autenticación tendrá que aceptar el live_id como contexto.
+- **`stop_reason` persistido**: si las analytics necesitan distinguir `user_ended` vs `time_limit` vs `disconnect`, agregar columna `fluency_metrics.stop_reason`.
+- **Weighted wpm**: si el timer pasa a chunks variables, cambiar `_aggregate_analyses` a promedio ponderado por duración del chunk.
+- **Gemini schema range**: hardening adicional sería añadir `minimum`/`maximum` 0-100 al schema Gemini para que un score fuera de rango falle en Gemini en vez de provocar IntegrityError en BD.
+- **MIME WS**: hoy el cliente debe mandar PCM 16k mono. No hay validación; si manda otro formato, Gemini puede rechazar silenciosamente.

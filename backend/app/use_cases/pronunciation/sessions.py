@@ -1,73 +1,130 @@
+from __future__ import annotations
+
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from app.domain.entities.phrase_pronunciation import PhrasePronunciation
-from app.domain.entities.pronunciation_session import PronunciationSession
+from app.domain.entities.enums import ModuleEnum, SessionStatusEnum
+from app.domain.entities.pronunciation_metrics import PronunciationMetrics
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
+from app.presentation.schemas.pronunciation import PronunciationSessionCreate
+from app.use_cases.live.sessions import validate_parent_live_session
 
 
-async def save_pronunciation_session(
-    data: dict,
+def _derive_overall_score(payload: PronunciationSessionCreate) -> int:
+    """Round average of the four sub-scores. Single canonical formula so the
+    server derives it instead of trusting a redundant client field. If a
+    weighted formula is needed in the future, change it here in one place."""
+
+    sub_scores = [
+        payload.metrics.vowel_score,
+        payload.metrics.consonant_score,
+        payload.metrics.fluency_score,
+        payload.metrics.intelligibility_score,
+    ]
+    return round(sum(sub_scores) / len(sub_scores))
+
+
+async def create_pronunciation_session(
+    db: AsyncSession,
     user: User,
-    session: AsyncSession,
-) -> PronunciationSession:
-    pronunciation_session = PronunciationSession(
+    payload: PronunciationSessionCreate,
+) -> tuple[Session, PronunciationMetrics]:
+    """Persist a completed pronunciation session as one transaction.
+
+    Inserts the root sessions row and the 1:1 pronunciation_metrics row.
+    duration_ms is derived from the time range; score is derived as the
+    average of the four sub-scores (precedent: loudness/accentuation derive
+    score from a single canonical formula).
+    """
+
+    if payload.parent_id is not None:
+        await validate_parent_live_session(db, user, payload.parent_id)
+
+    duration_ms = int((payload.ended_at - payload.started_at).total_seconds() * 1000)
+    score = _derive_overall_score(payload)
+
+    session_row = Session(
         user_id=user.id,
-        level=data["level"],
-        overall_score=data["overall_score"],
-        vowel_score=data["vowel_score"],
-        consonant_score=data["consonant_score"],
-        fluency_score=data["fluency_score"],
-        intelligibility_score=data["intelligibility_score"],
-        summary_feedback=data["summary_feedback"],
+        module=ModuleEnum.pronunciation,
+        parent_id=payload.parent_id,
+        started_at=payload.started_at,
+        ended_at=payload.ended_at,
+        duration_ms=duration_ms,
+        score=score,
+        status=SessionStatusEnum.completed,
     )
-    session.add(pronunciation_session)
-    await session.flush()
-    await session.refresh(pronunciation_session)
+    db.add(session_row)
+    await db.flush()
 
-    for evaluation in data["evaluations"]:
-        session.add(PhrasePronunciation(
-            session_id=pronunciation_session.id,
-            phrase_text=evaluation["phrase_text"],
-            phrase_index=evaluation["phrase_index"],
-            overall_score=evaluation["overall_score"],
-            vowel_score=evaluation["vowel_score"],
-            consonant_score=evaluation["consonant_score"],
-            fluency_score=evaluation["fluency_score"],
-            intelligibility_score=evaluation["intelligibility_score"],
-            feedback=evaluation["feedback"],
-            phoneme_errors=evaluation["phoneme_errors"],
-        ))
+    metrics_row = PronunciationMetrics(
+        session_id=session_row.id,
+        level=payload.metrics.level,
+        vowel_score=payload.metrics.vowel_score,
+        consonant_score=payload.metrics.consonant_score,
+        fluency_score=payload.metrics.fluency_score,
+        intelligibility_score=payload.metrics.intelligibility_score,
+        phrases_count=payload.metrics.phrases_count,
+    )
+    db.add(metrics_row)
 
-    await session.commit()
-    await session.refresh(pronunciation_session)
-    return pronunciation_session
+    await db.commit()
+    await db.refresh(session_row)
+    await db.refresh(metrics_row)
+    return session_row, metrics_row
 
 
 async def list_pronunciation_sessions(
-    user: User,
-    session: AsyncSession,
-) -> list[PronunciationSession]:
-    result = await session.execute(
-        select(PronunciationSession)
-        .where(PronunciationSession.user_id == user.id)
-        .order_by(PronunciationSession.created_at.desc())
+    db: AsyncSession, user: User
+) -> list[tuple[Session, PronunciationMetrics]]:
+    """Timeline of completed standalone pronunciation sessions for a user.
+
+    parent_id IS NULL excludes sessions that belong to a live composition;
+    those should be exposed through the live module's history.
+    """
+
+    query = (
+        select(Session, PronunciationMetrics)
+        .join(PronunciationMetrics, PronunciationMetrics.session_id == Session.id)
+        .where(
+            Session.user_id == user.id,
+            Session.module == ModuleEnum.pronunciation,
+            Session.parent_id.is_(None),
+        )
+        .order_by(Session.started_at.desc())
     )
-    return list(result.scalars().all())
+    result = await db.execute(query)
+    return list(result.all())
 
 
 async def get_pronunciation_session(
-    session_id: str,
-    user: User,
-    session: AsyncSession,
-) -> PronunciationSession | None:
-    result = await session.execute(
-        select(PronunciationSession)
-        .options(selectinload(PronunciationSession.phrase_pronunciations))
-        .where(
-            PronunciationSession.id == session_id,
-            PronunciationSession.user_id == user.id,
+    db: AsyncSession, user: User, session_id: UUID
+) -> tuple[Session, PronunciationMetrics] | None:
+    """Detail of one pronunciation session owned by the given user.
+
+    Returns None when the session does not exist or belongs to another user;
+    the router maps that to HTTP 404 to avoid leaking ownership information.
+    """
+
+    session_result = await db.execute(
+        select(Session).where(
+            Session.id == session_id,
+            Session.module == ModuleEnum.pronunciation,
         )
     )
-    return result.scalar_one_or_none()
+    session_row = session_result.scalar_one_or_none()
+    if session_row is None or session_row.user_id != user.id:
+        return None
+
+    metrics_result = await db.execute(
+        select(PronunciationMetrics).where(
+            PronunciationMetrics.session_id == session_id
+        )
+    )
+    metrics_row = metrics_result.scalar_one_or_none()
+    if metrics_row is None:
+        return None
+
+    return session_row, metrics_row
