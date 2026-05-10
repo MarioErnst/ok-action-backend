@@ -3,9 +3,11 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities.enums import StopReasonEnum
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
@@ -76,14 +78,16 @@ async def finalize_session_endpoint(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         )
 
-    children_count = len(
-        (await get_live_session(db=db, user=user, session_id=session_id))[2]
-    )
+    children_count = (
+        await db.execute(
+            select(func.count(Session.id)).where(Session.parent_id == session_id)
+        )
+    ).scalar_one()
     return FinalizeSessionResponse(
         session_id=session_row.id,
         status="completed",
         score=session_row.score,
-        children_count=children_count,
+        children_count=int(children_count),
     )
 
 

@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.domain.entities.enums import (
     ModuleEnum,
@@ -187,16 +188,7 @@ async def list_live_sessions(
     live is the root, never a child of another live in the current schema.
     """
 
-    children_count_subq = (
-        select(func.count(Session.id))
-        .where(Session.parent_id == Session.id)  # placeholder, overridden below
-        .correlate_except(Session)
-    )
-
-    # Build an explicit COUNT(children) per live session via a correlated
-    # subquery. Doing it with a separate alias keeps the row select simple.
-    from sqlalchemy.orm import aliased
-
+    # Correlated COUNT(children) per live session via an aliased Session.
     Child = aliased(Session)
     children_subq = (
         select(func.count(Child.id))
