@@ -25,6 +25,42 @@ class SessionNotActiveError(Exception):
     """Operation requires the live session to be in 'active' status."""
 
 
+class InvalidParentLiveError(Exception):
+    """parent_id does not reference an active live session owned by the user.
+
+    Raised by component modules (phonation, fluency, etc.) when a client
+    tries to persist a child session whose parent_id points at something
+    that is not a live, is not active, or belongs to another user.
+    """
+
+
+async def validate_parent_live_session(
+    db: AsyncSession, user: User, parent_id: UUID
+) -> None:
+    """Verify parent_id references a live session the caller can attach to.
+
+    Component modules call this before inserting a session with parent_id
+    set. The single query checks all four invariants at once: the row
+    exists, module='live', status='active', and user_id matches. Anything
+    else raises InvalidParentLiveError so the router can map it to 422.
+    """
+
+    parent = (
+        await db.execute(
+            select(Session).where(
+                Session.id == parent_id,
+                Session.module == ModuleEnum.live,
+                Session.status == SessionStatusEnum.active,
+                Session.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if parent is None:
+        raise InvalidParentLiveError(
+            f"parent_id {parent_id} is not an active live session owned by you"
+        )
+
+
 async def start_live_session(
     db: AsyncSession, user: User
 ) -> Session:
