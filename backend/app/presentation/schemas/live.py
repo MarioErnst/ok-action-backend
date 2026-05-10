@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -75,3 +75,17 @@ class LiveSessionListItem(BaseModel):
     status: Literal["active", "completed", "aborted"]
     children_count: int
     stop_reason: Literal["user_stop", "time_limit", "error", "completed"] | None
+
+
+class ComposedAudioEvaluationResponse(BaseModel):
+    """Output of POST /live/sessions/{id}/audio-evaluation.
+
+    audio_intelligible mirrors what Gemini reported on the audio gate. If
+    false, children is empty and no metrics rows were persisted. evaluation
+    is the raw Gemini response with one section per requested module; the
+    client uses it to render the summary screen without making extra GETs
+    for each child."""
+
+    audio_intelligible: bool
+    children: list[LiveChildOutput]
+    evaluation: dict[str, Any]
