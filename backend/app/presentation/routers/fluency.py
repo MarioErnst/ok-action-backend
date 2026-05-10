@@ -132,6 +132,7 @@ async def fluency_session_ws(
             while not stop_event.is_set():
                 message = await ws.receive()
                 if message["type"] == "websocket.disconnect":
+                    state.stop_reason = "disconnect"
                     stop_event.set()
                     break
                 if message.get("bytes"):
@@ -143,9 +144,11 @@ async def fluency_session_ws(
                         state.stop_reason = "user_ended"
                         stop_event.set()
         except WebSocketDisconnect:
+            state.stop_reason = "disconnect"
             stop_event.set()
         except Exception as exc:
             logger.warning("Fluency audio stream error: %s", exc)
+            state.stop_reason = "error"
             stop_event.set()
 
     async def analysis_timer():
@@ -187,8 +190,11 @@ async def fluency_session_ws(
     except Exception as exc:
         logger.error("Unexpected fluency session error: %s", exc)
     finally:
+        # Conservative default for paths that did not set a reason explicitly:
+        # we have no evidence the user ended cleanly, so mark unknown so it
+        # maps to aborted rather than silently passing as completed.
         if not state.stop_reason:
-            state.stop_reason = "user_ended"
+            state.stop_reason = "unknown"
 
         ended_at = datetime.now(timezone.utc)
         persisted_id: UUID | None = None
