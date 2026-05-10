@@ -11,7 +11,7 @@ _SILENCE_RESPONSE = {
     "pronunciation_score": 0,
     "rhythm_score": 0,
     "intonation_score": 0,
-    "stress_accuracy_score": 0,
+    "stress_score": 0,
     "feedback": "No se detectó habla en el audio. Por favor graba tu voz leyendo la frase en voz alta.",
     "specific_errors": [],
 }
