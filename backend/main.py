@@ -16,9 +16,12 @@ from app.presentation.routers.live_session import router as live_session_router
 from app.presentation.routers.muletillas import router as muletillas_router
 from app.presentation.routers.precision import router as precision_router
 from app.presentation.routers.facial_expression import router as facial_expression_router
+from fastapi.staticfiles import StaticFiles
+
 from app.presentation.routers.linguistic_versatility import (
     router as linguistic_versatility_router,
 )
+from app.presentation.routers.video_router import router as video_router
 from config import settings
 
 
@@ -54,6 +57,9 @@ app.include_router(linguistic_versatility_router)
 app.include_router(pauses_router)
 app.include_router(fluency_router)
 app.include_router(consistency_router)
+app.include_router(video_router)
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.get("/health")
