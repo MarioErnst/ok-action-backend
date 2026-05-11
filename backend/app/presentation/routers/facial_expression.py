@@ -1,107 +1,104 @@
-# Full module documentation: documentacion/modulos/expresion-facial.md
-import uuid
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.entities.facial_expression_metrics import FacialExpressionMetrics
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.facial_expression import (
-    ALLOWED_EMOTIONS,
-    EmotionEventResponse,
-    SessionCreateRequest,
-    SessionDetailResponse,
-    SessionListItem,
+    FacialExpressionMetricsOutput,
+    FacialExpressionSessionCreate,
+    FacialExpressionSessionDetail,
+    FacialExpressionSessionListItem,
 )
 from app.use_cases.facial_expression.sessions import (
+    create_facial_expression_session,
     get_facial_expression_session,
     list_facial_expression_sessions,
-    save_facial_expression_session,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 
 router = APIRouter(prefix="/facial-expression", tags=["facial-expression"])
 
 
-def _session_to_response(s) -> SessionDetailResponse:
-    """Convert a FacialExpressionSession ORM instance to the full response schema."""
-    return SessionDetailResponse(
-        id=str(s.id),
-        duration_ms=s.duration_ms,
-        dominant_emotion=s.dominant_emotion,
-        dominant_percentage=s.dominant_percentage,
-        emotion_distribution=s.emotion_distribution or {},
-        created_at=s.created_at.isoformat(),
-        events=[
-            EmotionEventResponse(
-                t_ms=ev.t_ms,
-                emotion=ev.emotion,
-                gestures=ev.gestures or {},
-            )
-            for ev in s.events
-        ],
+def _build_detail(
+    session_row: Session, metrics_row: FacialExpressionMetrics
+) -> FacialExpressionSessionDetail:
+    return FacialExpressionSessionDetail(
+        id=session_row.id,
+        user_id=session_row.user_id,
+        started_at=session_row.started_at,
+        ended_at=session_row.ended_at,
+        duration_ms=session_row.duration_ms,
+        score=session_row.score,
+        status=session_row.status,
+        created_at=session_row.created_at,
+        metrics=FacialExpressionMetricsOutput.model_validate(metrics_row),
     )
 
 
-@router.post("/sessions", response_model=SessionDetailResponse, status_code=201)
-async def create_session(
-    request: SessionCreateRequest,
+@router.post(
+    "/sessions",
+    response_model=FacialExpressionSessionDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_session_endpoint(
+    payload: FacialExpressionSessionCreate,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    """Persist a completed analysis session and return the full saved record."""
-    # Reject unknown emotion values at the boundary so the database column
-    # stays clean and bugs in the client don't silently corrupt analytics.
-    for ev in request.events:
-        if ev.emotion not in ALLOWED_EMOTIONS:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Emoción no soportada: {ev.emotion}",
-            )
-
-    data = request.model_dump()
+    db: AsyncSession = Depends(get_session),
+) -> FacialExpressionSessionDetail:
     try:
-        facial_session = await save_facial_expression_session(data, user, session)
-    except Exception:
-        await session.rollback()
-        raise
-
-    full = await get_facial_expression_session(str(facial_session.id), user, session)
-    return _session_to_response(full)
-
-
-@router.get("/sessions", response_model=list[SessionListItem])
-async def list_sessions(
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    """Return a summary list of all facial expression sessions for the user."""
-    sessions = await list_facial_expression_sessions(user, session)
-    return [
-        SessionListItem(
-            id=str(s.id),
-            duration_ms=s.duration_ms,
-            dominant_emotion=s.dominant_emotion,
-            dominant_percentage=s.dominant_percentage,
-            created_at=s.created_at.isoformat(),
+        session_row, metrics_row = await create_facial_expression_session(
+            db=db, user=user, payload=payload
         )
-        for s in sessions
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    return _build_detail(session_row, metrics_row)
+
+
+@router.get("/sessions", response_model=list[FacialExpressionSessionListItem])
+async def list_sessions_endpoint(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[FacialExpressionSessionListItem]:
+    rows = await list_facial_expression_sessions(db=db, user=user)
+    return [
+        FacialExpressionSessionListItem(
+            id=session_row.id,
+            started_at=session_row.started_at,
+            ended_at=session_row.ended_at,
+            duration_ms=session_row.duration_ms,
+            score=session_row.score,
+            status=session_row.status,
+            top_emotion=metrics_row.top_emotion,
+            expressiveness_score=metrics_row.expressiveness_score,
+        )
+        for session_row, metrics_row in rows
     ]
 
 
-@router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
-async def get_session_detail(
-    session_id: str,
+@router.get(
+    "/sessions/{session_id}",
+    response_model=FacialExpressionSessionDetail,
+)
+async def get_session_endpoint(
+    session_id: UUID,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    """Return full detail of a single session including its event timeline."""
-    try:
-        uuid.UUID(session_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-
-    facial_session = await get_facial_expression_session(session_id, user, session)
-    if not facial_session:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-    return _session_to_response(facial_session)
+    db: AsyncSession = Depends(get_session),
+) -> FacialExpressionSessionDetail:
+    found = await get_facial_expression_session(
+        db=db, user=user, session_id=session_id
+    )
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de expresión facial no encontrada",
+        )
+    return _build_detail(*found)

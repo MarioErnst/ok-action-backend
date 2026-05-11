@@ -2,239 +2,109 @@
 
 ## 1. Descripción funcional
 
-El módulo de Acentuación permite la evaluación asistida por inteligencia artificial del acento prosódico, ritmo, entonación y precisión del estrés silábico en frases grabadas por el usuario en español.
+El módulo de Acentuación entrena al usuario a leer frases respetando el patrón acentual del español. El flujo:
 
-El flujo de uso es el siguiente:
-
-1. El usuario graba una frase en voz alta a través de la interfaz de cliente.
-2. El archivo de audio se envía al backend junto con el texto de la frase.
-3. El servicio de IA (Gemini) analiza el audio contra patrones de pronunciación española.
-4. Se detectan errores específicos por palabra con sugerencias de corrección.
-5. El usuario puede evaluar múltiples frases en una sesión.
-6. Al terminar la sesión, se persiste toda la información con las evaluaciones de cada frase.
-
-El módulo proporciona retroalimentación detallada sobre:
-
-- Acento prosódico: patrones llana, aguda y esdrújula.
-- Precisión del estrés silábico: identificación correcta de la sílaba tónica.
-- Ritmo: cadencia y distribución temporal de las sílabas.
-- Entonación: patrones declarativos, interrogativos y exclamativos.
-- Pronunciación general: claridad y articulación.
+1. El frontend muestra una frase y graba al usuario leyéndola en voz alta.
+2. El frontend envía cada frase grabada al endpoint de evaluación, que llama a Gemini AI y retorna las puntuaciones (pronunciación, ritmo, entonación, acentuación) más feedback verbal específico.
+3. El frontend agrega los resultados de todas las frases de la sesión y los envía al endpoint de creación de sesión.
+4. El backend persiste solo las métricas agregadas; el feedback verbal se descarta tras mostrarlo en la UI.
 
 ## 2. Capas del módulo
 
 | Capa | Ubicación | Responsabilidad |
 |------|-----------|-----------------|
-| **Presentación (Router)** | `backend/app/presentation/routers/accentuation.py` | Define los endpoints HTTP y valida las solicitudes. |
-| **Esquemas** | `backend/app/presentation/schemas/accentuation.py` | Define los modelos de datos para solicitudes y respuestas. |
-| **Casos de uso** | `backend/app/use_cases/accentuation/` | Lógica de negocio: evaluación de frases y persistencia de sesiones. |
-| **Entidades** | `backend/app/domain/entities/` | Objetos de dominio: `AccentuationSession`, `PhraseEvaluation`. |
-| **Servicios de IA** | `backend/app/infrastructure/ai/gemini.py` | `GeminiAccentuationService`: integración con Gemini. |
-
-Cada capa depende solo de las capas inferiores. El flujo de datos es unidireccional: presentación → casos de uso → persistencia.
+| Router | `backend/app/presentation/routers/accentuation.py` | Endpoints HTTP (evaluate + sessions CRUD), mapeo de errores. |
+| Schemas | `backend/app/presentation/schemas/accentuation.py` | Contratos Pydantic v2 (per-frase efímero + sesión persistida). |
+| Use cases | `backend/app/use_cases/accentuation/evaluate_phrase.py`, `sessions.py` | Llamada a Gemini con corte temprano por silencio + persistencia de sesiones. |
+| Infra AI | `backend/app/infrastructure/ai/gemini.py` | Cliente Gemini con prompt y schema de respuesta. |
+| Infra audio | `backend/app/infrastructure/audio/silence_detector.py` | Detector de silencio para evitar llamadas Gemini sin habla. |
+| Entidades | `backend/app/domain/entities/session.py`, `accentuation_metrics.py` | Modelo SQLAlchemy del esquema uniforme. |
 
 ## 3. Modelo de datos
 
-### Tabla: `accentuation_sessions`
+Una sesión de acentuación se representa con dos filas: la raíz `sessions` y su 1:1 `accentuation_metrics`. **No hay tabla hija**: las evaluaciones por frase son efímeras (van al frontend desde Gemini, no al backend de persistencia).
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la sesión. |
-| `user_id` | UUID | FK → users (CASCADE) | Usuario propietario de la sesión. |
-| `overall_score` | NUMERIC(5,2) | NOT NULL | Puntuación general (0-100). |
-| `pronunciation_score` | NUMERIC(5,2) | NOT NULL | Puntuación de pronunciación (0-100). |
-| `rhythm_score` | NUMERIC(5,2) | NOT NULL | Puntuación de ritmo (0-100). |
-| `intonation_score` | NUMERIC(5,2) | NOT NULL | Puntuación de entonación (0-100). |
-| `stress_accuracy_score` | NUMERIC(5,2) | NOT NULL | Puntuación de precisión del estrés silábico (0-100). |
-| `summary_feedback` | TEXT | NOT NULL | Retroalimentación general de la sesión. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Marca temporal de creación (UTC). |
+### `sessions` (raíz, compartida)
 
-**Relación:** Una sesión tiene muchas evaluaciones de frases (`phrase_evaluations`).
+Para acentuación standalone: `module='accentuation'`, `parent_id=NULL`, `status='completed'`. `score` lo deriva el backend.
 
-### Tabla: `phrase_evaluations`
+### `accentuation_metrics` (1:1 con `sessions`)
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la evaluación. |
-| `session_id` | UUID | FK → accentuation_sessions (CASCADE) | Sesión a la que pertenece. |
-| `phrase_text` | VARCHAR(500) | NOT NULL | Texto de la frase evaluada. |
-| `phrase_index` | INTEGER | NOT NULL | Índice secuencial de la frase en la sesión (0-based). |
-| `overall_score` | NUMERIC(5,2) | NOT NULL | Puntuación general de la frase (0-100). |
-| `pronunciation_score` | NUMERIC(5,2) | NOT NULL | Puntuación de pronunciación (0-100). |
-| `rhythm_score` | NUMERIC(5,2) | NOT NULL | Puntuación de ritmo (0-100). |
-| `intonation_score` | NUMERIC(5,2) | NOT NULL | Puntuación de entonación (0-100). |
-| `stress_accuracy_score` | NUMERIC(5,2) | NOT NULL | Puntuación de precisión del estrés (0-100). |
-| `feedback` | TEXT | NOT NULL | Retroalimentación constructiva para la frase. |
-| `specific_errors` | JSONB | NOT NULL | Array de objetos con errores específicos por palabra. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Marca temporal de creación (UTC). |
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `pronunciation_score` | SMALLINT | NOT NULL, CHECK 0-100 | Puntuación agregada de pronunciación. |
+| `rhythm_score` | SMALLINT | NOT NULL, CHECK 0-100 | Puntuación agregada de ritmo. |
+| `intonation_score` | SMALLINT | NOT NULL, CHECK 0-100 | Puntuación agregada de entonación. |
+| `stress_score` | SMALLINT | NOT NULL, CHECK 0-100 | Puntuación agregada de acentuación. |
+| `phrases_count` | INT | NOT NULL DEFAULT 0 | Cantidad de frases evaluadas en la sesión. |
 
-**Estructura del campo `specific_errors` (JSONB):**
+### Decisiones de diseño
 
-```json
-[
-  {
-    "word": "sílaba",
-    "expected_stress": "esdrújula",
-    "actual_issue": "estrés en primera sílaba",
-    "suggestion": "La palabra requiere estrés en la antepenúltima sílaba: sí-la-ba"
-  }
-]
-```
+- **Tabla hija `phrase_evaluations` eliminada**: las evaluaciones por frase incluían `phrase_text`, `feedback`, `specific_errors` — todo texto generado por LLM sin valor longitudinal. El JSON propuesta lo dropeó explícitamente. Si el feedback necesita mostrarse al usuario tras la sesión, se cachea fuera de BD (Redis con TTL, según la sección `ephemeral_storage` del propuesta).
+- **`summary_feedback` eliminado**: mismo razonamiento; texto de LLM sin uso analítico.
+- **`stress_accuracy_score` → `stress_score`**: alineado con la convención `_score` del nuevo schema. El cambio incluye la prompt de Gemini, su `response_schema`, y la respuesta de silencio en `evaluate_phrase`.
+- **`score` derivado en backend = promedio redondeado de los 4 sub-scores**: fórmula canónica única (precedente loudness, no phonation). Si en el futuro se quiere ponderar (p.ej. dar más peso a `pronunciation_score`), cambia en `_derive_overall_score` en un solo lugar.
+- **`phrases_count >= 1`**: una sesión sin frases no tiene sentido; validador en Pydantic.
+- **El endpoint `/evaluate` se mantiene**: es la fuente de las puntuaciones por frase. Su respuesta carga `feedback` y `specific_errors` para mostrar en UI durante la sesión, pero ninguno de esos campos termina en BD.
 
-### Migración
+## 4. Esquemas
 
-Archivo: `backend/alembic/versions/ca42c89bd609_add_accentuation_tables.py`
+### Evaluación por frase (efímera)
 
-## 4. Esquemas de solicitud y respuesta
+`PhraseSpecificError`: `word`, `expected_stress`, `actual_issue`, `suggestion`. (Texto generado por Gemini.)
 
-### `SpecificErrorSchema`
+`PhraseEvaluation`: `phrase_text`, `phrase_index`, `overall_score` (0-100, ephemeral, no persistido), `pronunciation_score`, `rhythm_score`, `intonation_score`, `stress_score` (todos 0-100), `feedback`, `specific_errors`.
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `word` | str | Palabra con el error detectado. |
-| `expected_stress` | str | Tipo de acento esperado (ej: "esdrújula", "aguda"). |
-| `actual_issue` | str | Descripción del problema observado. |
-| `suggestion` | str | Recomendación para corregir. |
+### Métricas persistidas
 
-### `PhraseEvaluationResponse`
+`AccentuationMetricsInput`: 4 sub-scores (0-100) + `phrases_count` (>=1).
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `phrase_text` | str | Texto de la frase evaluada. |
-| `phrase_index` | int | Índice secuencial. |
-| `overall_score` | float | Puntuación general (0-100). |
-| `pronunciation_score` | float | Puntuación de pronunciación. |
-| `rhythm_score` | float | Puntuación de ritmo. |
-| `intonation_score` | float | Puntuación de entonación. |
-| `stress_accuracy_score` | float | Puntuación de precisión del estrés. |
-| `feedback` | str | Retroalimentación constructiva. |
-| `specific_errors` | list[SpecificErrorSchema] | Errores por palabra. |
+`AccentuationMetricsOutput`: mismos campos.
 
-### `AccentuationSessionRequest`
+### Sesión
 
-Incluye los 5 scores consolidados de la sesión, `summary_feedback` y la lista de evaluaciones de frases.
+`AccentuationSessionCreate`: `started_at`, `ended_at`, `metrics`. **Sin `score`**: el backend lo deriva. Validador `validate_time_range` chequea `ended_at > started_at`.
 
-### `AccentuationSessionResponse`
+`AccentuationSessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`.
 
-Igual al request más `id`, `user_id` y `created_at`.
-
-### `AccentuationSessionListItem`
-
-Respuesta compacta para listados: `id`, `overall_score`, `created_at`.
+`AccentuationSessionListItem` (compacto): `id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `phrases_count`.
 
 ## 5. Casos de uso
 
-### `evaluate_phrase(audio_bytes, mime_type, phrase_text)`
+### `evaluate_phrase(audio_bytes, mime_type, phrase_text)` — `evaluate_phrase.py`
 
-**Flujo:**
-1. Detecta silencio. Si el audio es silencioso, retorna `_SILENCE_RESPONSE` (todos los scores en 0).
-2. Si hay contenido, invoca `GeminiAccentuationService.evaluate_phrase()`.
-3. Valida que los scores estén en el rango [0, 100].
-4. Retorna `PhraseEvaluationResponse`.
+1. Si el detector local de silencio marca el audio como vacío, retorna `_SILENCE_RESPONSE` (todos los scores en 0, feedback fijo). Evita el costo de una llamada Gemini sin habla.
+2. Si el detector falla por error, se loggea warning y se procede a Gemini (que también tiene manejo de silencio en su prompt).
+3. Llama a `GeminiAccentuationService.evaluate_phrase` y retorna el dict tal cual viene de Gemini.
 
-**Errores:** `GeminiEvaluationError` si el servicio de IA falla.
+### `create_accentuation_session(db, user, payload)` — `sessions.py`
 
-### `save_accentuation_session(data, user, session)`
+En una transacción inserta `sessions(module='accentuation', status='completed', parent_id=NULL)` con `duration_ms` derivado y `score` calculado por `_derive_overall_score` + `accentuation_metrics` 1:1.
 
-Crea `AccentuationSession` y, dentro de la misma transacción, una `PhraseEvaluation` por cada evaluación. Hace commit al finalizar.
+### `_derive_overall_score(payload)` — `sessions.py`
 
-### `list_accentuation_sessions(user, session)`
+Promedio redondeado de los 4 sub-scores. Función separada para que el cambio de fórmula (si llega) sea local.
 
-Consulta todas las sesiones del usuario ordenadas por `created_at` descendente.
+### `list_accentuation_sessions(db, user)`
 
-### `get_accentuation_session(session_id, user, session)`
+JOIN `sessions + accentuation_metrics`, filtra `module='accentuation' AND parent_id IS NULL`, ordena por `started_at DESC`.
 
-Carga la sesión con `selectinload(phrase_evaluations)`. Verifica que la sesión pertenezca al usuario.
+### `get_accentuation_session(db, user, session_id)`
 
-**Errores:** `NotFoundError` si la sesión no existe. `UnauthorizedError` si el usuario no es propietario.
+Detalle. Retorna `None` para no-encontrado o cross-user (router → 404 sin distinguir).
 
-## 6. Integración con Gemini AI
+## 6. Endpoints
 
-### `GeminiAccentuationService`
+- `POST /accentuation/evaluate` — multipart con `audio` (UploadFile), `phrase_text` (Form), `phrase_index` (Form). Retorna `PhraseEvaluation` (no persiste nada). 502 si Gemini falla.
+- `POST /accentuation/sessions` → 201 / 422.
+- `GET /accentuation/sessions` → 200, lista standalone ordenada por `started_at DESC`.
+- `GET /accentuation/sessions/{id}` → 200 / 404.
 
-**Ubicación:** `backend/app/infrastructure/ai/gemini.py`
+Todos los endpoints requieren Bearer JWT.
 
-**Modelo:** `gemini-2.5-flash`
+## 7. Pendientes en el roadmap
 
-**Entrada:**
-
-| Parámetro | Tipo | Descripción |
-|-----------|------|-------------|
-| `audio_bytes` | bytes | Contenido binario del archivo de audio. |
-| `mime_type` | str | Tipo MIME del audio. |
-| `phrase_text` | str | Texto de la frase que se evaluará. |
-
-**Prompt:** Evalúa desde la perspectiva de un profesor de español nativo. Analiza: acento prosódico (patrones llana/aguda/esdrújula), precisión del estrés silábico por palabra, entonación (declarativa/interrogativa/exclamativa), ritmo y articulación general.
-
-**Salida JSON:**
-
-```json
-{
-  "overall_score": 78,
-  "pronunciation_score": 82,
-  "rhythm_score": 75,
-  "intonation_score": 80,
-  "stress_accuracy_score": 72,
-  "feedback": "Retroalimentacion constructiva en español.",
-  "specific_errors": [
-    {
-      "word": "silaba",
-      "expected_stress": "esdrujula",
-      "actual_issue": "estres en primera silaba",
-      "suggestion": "La palabra requiere estres en la antepenultima silaba"
-    }
-  ]
-}
-```
-
-**Errores:** `GeminiEvaluationError` cuando la respuesta no puede parsearse. Se registra el error con contexto suficiente para diagnóstico.
-
-**Credenciales:** La clave API de Gemini se lee desde `GEMINI_API_KEY` vía el módulo de configuración centralizado.
-
-## 7. Endpoints de la API
-
-### POST `/accentuation/evaluate`
-
-Evalúa una frase grabada por el usuario.
-
-- **Método:** POST — **Content-Type:** multipart/form-data
-- **Autenticación:** Bearer token requerido
-
-**Parámetros:**
-
-| Campo | Tipo | Requerido | Descripción |
-|-------|------|-----------|-------------|
-| `audio` | file | Sí | Archivo de audio. |
-| `phrase_text` | string | Sí | Texto de la frase evaluada. |
-| `phrase_index` | integer | Sí | Índice secuencial (0-based). |
-
-**Respuesta (200 OK):** `PhraseEvaluationResponse`
-
-**Errores:** `400` — audio vacío o parámetros faltantes. `401` — token inválido.
-
----
-
-### POST `/accentuation/sessions`
-
-Crea una nueva sesión de acentuación con todas sus evaluaciones.
-
-- **Método:** POST — **Código:** 201 Created
-- **Body:** `AccentuationSessionRequest`
-- **Respuesta:** `AccentuationSessionResponse`
-
----
-
-### GET `/accentuation/sessions`
-
-Lista todas las sesiones del usuario autenticado en orden descendente.
-
-- **Respuesta (200 OK):** `list[AccentuationSessionListItem]`
-
----
-
-### GET `/accentuation/sessions/{session_id}`
-
-Detalles completos de una sesión con todas sus evaluaciones de frases.
-
-- **Respuesta (200 OK):** `AccentuationSessionResponse`
-- **Errores:** `404` — sesión no existe. `403` — sesión pertenece a otro usuario.
+- **Composición en sesión live**: cuando se reescriba `live`, `create_accentuation_session` debe aceptar `parent_id` opcional.
+- **Sesiones abortadas**: hoy solo `status='completed'`.
+- **Cache efímera de `feedback` Gemini**: el JSON propuesta sugiere Redis con TTL 7-30 días para mostrar el feedback al usuario después de la sesión. No implementado todavía; hoy el feedback solo vive en la respuesta inmediata del `/evaluate`.

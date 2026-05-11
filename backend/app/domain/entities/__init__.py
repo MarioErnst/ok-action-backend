@@ -1,46 +1,47 @@
 from app.domain.entities.role import Role
 from app.domain.entities.user import User
-from app.domain.entities.phonation_session import PhonationSession
-from app.domain.entities.exercise_result import ExerciseResult
+from app.domain.entities.prompt import Prompt
 from app.domain.entities.loudness_preset import LoudnessPreset
-from app.domain.entities.loudness_session import LoudnessSession
-from app.domain.entities.accentuation_session import AccentuationSession
-from app.domain.entities.phrase_evaluation import PhraseEvaluation
-from app.domain.entities.pronunciation_session import PronunciationSession
-from app.domain.entities.phrase_pronunciation import PhrasePronunciation
-from app.domain.entities.muletillas_session import MuletillasSession, PhraseMuletillas
-from app.domain.entities.live_session import LiveSession
-from app.domain.entities.precision_question import PrecisionQuestion
-from app.domain.entities.precision_session import PrecisionSession
+from app.domain.entities.session import Session
+from app.domain.entities.phonation_metrics import PhonationMetrics
+from app.domain.entities.phonation_session_exercise import PhonationSessionExercise
+from app.domain.entities.loudness_metrics import LoudnessMetrics
+from app.domain.entities.accentuation_metrics import AccentuationMetrics
+from app.domain.entities.pronunciation_metrics import PronunciationMetrics
+from app.domain.entities.muletillas_metrics import MuletillasMetrics
+from app.domain.entities.muletillas_word_usage import MuletillasWordUsage
+from app.domain.entities.pause_metrics import PauseMetrics
+from app.domain.entities.precision_metrics import PrecisionMetrics
 from app.domain.entities.precision_round import PrecisionRound
-from app.domain.entities.facial_expression_session import FacialExpressionSession
-from app.domain.entities.facial_expression_emotion_event import FacialExpressionEmotionEvent
-from app.domain.entities.linguistic_versatility_question import LinguisticVersatilityQuestion
-from app.domain.entities.linguistic_versatility_session import LinguisticVersatilitySession
+from app.domain.entities.linguistic_versatility_metrics import LinguisticVersatilityMetrics
 from app.domain.entities.linguistic_versatility_round import LinguisticVersatilityRound
-from app.domain.entities.pause_session import PauseSession
+from app.domain.entities.facial_expression_metrics import FacialExpressionMetrics
+from app.domain.entities.body_expression_metrics import BodyExpressionMetrics
+from app.domain.entities.fluency_metrics import FluencyMetrics
+from app.domain.entities.consistency_metrics import ConsistencyMetrics
+from app.domain.entities.live_metrics import LiveMetrics
 
 __all__ = [
     "Role",
     "User",
-    "PhonationSession",
-    "ExerciseResult",
+    "Prompt",
     "LoudnessPreset",
-    "LoudnessSession",
-    "AccentuationSession",
-    "PhraseEvaluation",
-    "PronunciationSession",
-    "PhrasePronunciation",
-    "MuletillasSession",
-    "PhraseMuletillas",
-    "LiveSession",
-    "PrecisionQuestion",
-    "PrecisionSession",
+    "Session",
+    "PhonationMetrics",
+    "PhonationSessionExercise",
+    "LoudnessMetrics",
+    "AccentuationMetrics",
+    "PronunciationMetrics",
+    "MuletillasMetrics",
+    "MuletillasWordUsage",
+    "PauseMetrics",
+    "PrecisionMetrics",
     "PrecisionRound",
-    "FacialExpressionSession",
-    "FacialExpressionEmotionEvent",
-    "LinguisticVersatilityQuestion",
-    "LinguisticVersatilitySession",
+    "LinguisticVersatilityMetrics",
     "LinguisticVersatilityRound",
-    "PauseSession",
+    "FacialExpressionMetrics",
+    "BodyExpressionMetrics",
+    "FluencyMetrics",
+    "ConsistencyMetrics",
+    "LiveMetrics",
 ]

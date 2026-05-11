@@ -2,170 +2,97 @@
 
 ## 1. Descripción funcional
 
-El módulo de Pausas permite registrar y consultar sesiones donde el usuario practica el uso de silencios durante una respuesta oral. El objetivo no es penalizar toda pausa, sino distinguir entre pausas intencionales que ordenan el discurso, pocas pausas que vuelven el habla apresurada y demasiadas pausas que cortan la fluidez.
+El módulo de Pausas registra sesiones donde el usuario practica el uso de silencios durante una respuesta hablada. El objetivo no es eliminar las pausas: es diferenciar entre pausas intencionales que ordenan el discurso, demasiadas pausas que cortan la fluidez, y pocas pausas que vuelven el habla apresurada.
 
-El flujo funcional de la modalidad normal es el siguiente:
+El análisis de audio se hace en el frontend con Web Audio API. El backend recibe la sesión completa con métricas agregadas y dos responsabilidades:
 
-1. El frontend presenta una consigna al usuario.
-2. El usuario graba su respuesta.
-3. El frontend analiza los frames de audio, detecta intervalos de silencio y calcula métricas de pausas.
-4. El frontend envía las métricas ya calculadas al backend.
-5. El backend valida el contrato, persiste la sesión y permite consultar el historial.
+1. Persistir la sesión bajo el esquema unificado.
+2. Exponer el histórico standalone del usuario.
 
-En esta modalidad normal, el backend no invoca Gemini AI. La evaluación se calcula en el cliente y el backend actúa como capa de persistencia autenticada.
+No realiza análisis de audio ni cálculos derivados.
 
 ## 2. Capas del módulo
 
 | Capa | Ubicación | Responsabilidad |
 |------|-----------|-----------------|
-| **Presentación (Router)** | `backend/app/presentation/routers/pauses.py` | Expone endpoints HTTP para crear, listar y consultar sesiones de pausas. |
-| **Presentación (Schemas)** | `backend/app/presentation/schemas/pauses.py` | Define contratos Pydantic de métricas, intervalos y sesiones. |
-| **Casos de uso** | `backend/app/use_cases/pauses/sessions.py` | Persiste sesiones y consulta sesiones del usuario autenticado. |
-| **Entidades** | `backend/app/domain/entities/pause_session.py` | Modelo SQLAlchemy `PauseSession`. |
-| **Migración** | `backend/alembic/versions/9a1c2f3d4e5f_add_pause_sessions.py` | Crea la tabla `pause_sessions`. |
+| Router | `backend/app/presentation/routers/pauses.py` | Endpoints HTTP, mapeo de errores, traducción a esquemas. |
+| Schemas | `backend/app/presentation/schemas/pauses.py` | Contratos Pydantic v2 con validación cruzada de invariantes. |
+| Use cases | `backend/app/use_cases/pauses/sessions.py` | Persistencia y consultas; orquesta la transacción multi-tabla. |
+| Entidades | `backend/app/domain/entities/session.py`, `pause_metrics.py` | Modelo SQLAlchemy del esquema uniforme. |
 
 ## 3. Modelo de datos
 
-### Tabla: `pause_sessions`
+Una sesión de pausas se representa con dos filas: la raíz `sessions` y su 1:1 `pause_metrics`.
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la sesión. |
-| `user_id` | UUID | FK → users (CASCADE), NOT NULL | Usuario propietario de la sesión. |
-| `prompt_text` | VARCHAR(500) | NOT NULL | Consigna usada para la práctica. |
-| `duration_ms` | INTEGER | NOT NULL | Duración total de la grabación en milisegundos. |
-| `total_pauses` | INTEGER | NOT NULL | Cantidad de pausas detectadas. |
-| `total_pause_duration_ms` | INTEGER | NOT NULL | Suma de duración de todas las pausas. |
-| `average_pause_ms` | NUMERIC(10,2) | NOT NULL | Duración promedio de pausa. |
-| `longest_pause_ms` | INTEGER | NOT NULL | Duración de la pausa más larga. |
-| `silence_ratio` | NUMERIC(6,4) | NOT NULL | Proporción de silencio respecto de la duración total. |
-| `classification` | VARCHAR(50) | NOT NULL | Clasificación: `pocas pausas`, `pausas adecuadas` o `demasiadas pausas`. |
-| `pauses` | JSONB | NOT NULL | Lista de intervalos detectados. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Timestamp de creación. |
+### `sessions` (raíz, compartida)
 
-**Relación:** un usuario tiene muchas `pause_sessions` (1:N).
+Para pausas standalone: `module='pauses'`, `parent_id=NULL`, `status='completed'`. Cuando se reescriba el módulo `live`, las nested usarán `parent_id=<live_id>`.
 
-### Migración
+Columnas relevantes: `id`, `user_id`, `module`, `parent_id`, `started_at`, `ended_at`, `duration_ms` (derivado), `score` (recibido del cliente), `status`, `created_at`.
 
-Archivo: `backend/alembic/versions/9a1c2f3d4e5f_add_pause_sessions.py`
+### `pause_metrics` (1:1 con `sessions`)
 
-La migración depende de `177abcd602b1` y crea la tabla `pause_sessions`.
+Métricas agregadas de la sesión.
 
-## 4. Esquemas de solicitud y respuesta
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `pauses_count` | INT | NOT NULL DEFAULT 0 | Cantidad total de pausas detectadas. |
+| `total_pause_ms` | INT | NOT NULL DEFAULT 0 | Suma de duración de todas las pausas. |
+| `longest_pause_ms` | INT | NOT NULL DEFAULT 0 | Duración de la pausa más larga. |
+| `silence_pct` | SMALLINT | NOT NULL, CHECK 0-100 | Porcentaje de silencio sobre el total de la sesión. |
 
-### `PauseInterval`
+### Decisiones de diseño
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `start_ms` | int | Inicio del intervalo de pausa relativo al comienzo de la grabación. |
-| `end_ms` | int | Fin del intervalo de pausa. |
-| `duration_ms` | int | Duración del intervalo. |
+- **`pauses` (JSONB) eliminado**: el array completo de intervalos `(start_ms, end_ms, duration_ms)` se descartó intencionalmente. Servía para un eventual replay UI que nunca se construyó; ocupaba espacio y no aportaba valor analítico longitudinal.
+- **`average_pause_ms` eliminado**: se deriva trivialmente de `total_pause_ms / pauses_count` en frontend cuando se necesita mostrar.
+- **`classification` eliminado**: era una etiqueta string ("muchas", "pocas", "balanceadas") derivable de las métricas. La clasificación se hace en frontend con la fórmula que el negocio defina; el backend almacena hechos, no juicios.
+- **`prompt_text` eliminado**: el prompt era texto libre que no se reusaba longitudinalmente y duplicaba contexto sin valor analítico. Si se quiere recordar qué practicó el usuario, esa metadata vive en frontend.
+- **`silence_ratio` (FLOAT 0-1) → `silence_pct` (SMALLINT 0-100)**: alineado con la convención del schema (sufijo `_pct`, SMALLINT con CHECK).
+- **Score viene del cliente**: la fórmula que combina `pauses_count`, `total_pause_ms`, `longest_pause_ms` y `silence_pct` para dar un 0-100 es subjetiva (depende de qué se considera "buen ritmo"). Sigue el precedente de phonation (no de loudness, donde el score sí es derivable trivialmente).
+- **Validadores cruzados en schema**:
+  - `pauses_count == 0 ⇒ total_pause_ms == 0 AND longest_pause_ms == 0` (sin pausas no puede haber duración).
+  - `longest_pause_ms <= total_pause_ms` (la pausa más larga no puede superar al total).
+  - `total_pause_ms <= duration_ms` (a nivel sesión: el silencio no puede ser mayor a la sesión completa).
 
-Todos los campos deben ser mayores o iguales a 0.
+## 4. Esquemas
 
-### `PauseMetrics`
+### Entrada
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `total_pauses` | int | Cantidad de pausas detectadas. |
-| `total_pause_duration_ms` | int | Duración acumulada de pausas. |
-| `average_pause_ms` | float | Duración promedio de pausa. |
-| `longest_pause_ms` | int | Pausa más larga detectada. |
-| `silence_ratio` | float | Proporción entre 0 y 1 de silencio sobre duración total. |
-| `classification` | str | Resultado cualitativo de la evaluación. |
-| `pauses` | list[PauseInterval] | Intervalos individuales detectados. |
+`PauseMetricsInput`: `pauses_count` (>=0), `total_pause_ms` (>=0), `longest_pause_ms` (>=0), `silence_pct` (0-100). Validador `validate_internal_consistency` aplica las reglas de cohesión.
 
-### `PauseSessionRequest`
+`PauseSessionCreate`: `started_at`, `ended_at`, `score` (0-100), `metrics`. Validador `validate_session_consistency` chequea `ended_at > started_at` y `total_pause_ms <= duration_ms`.
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `prompt_text` | str | Consigna usada por el usuario. Longitud: 1 a 500 caracteres. |
-| `duration_ms` | int | Duración total de la grabación. Debe ser mayor a 0. |
-| `pause_metrics` | PauseMetrics | Métricas calculadas por el frontend. |
+### Salida
 
-### `PauseSessionResponse`
+`PauseSessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`.
 
-Respuesta completa de una sesión: `id`, `prompt_text`, `duration_ms`, `pause_metrics` y `created_at`.
-
-### `PauseSessionListItem`
-
-Respuesta compacta para historial: `id`, `prompt_text`, `duration_ms`, `total_pauses`, `silence_ratio`, `classification` y `created_at`.
+`PauseSessionListItem` (compacto): `id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `pauses_count`, `silence_pct`. Incluye los dos números más informativos para una card de timeline.
 
 ## 5. Casos de uso
 
-### `save_pause_session(data, user, session)`
+### `create_pause_session(db, user, payload)`
 
-Crea una entidad `PauseSession` con las métricas recibidas, asigna `user_id` al usuario autenticado, persiste la sesión y retorna el registro refrescado desde la base de datos.
+En una transacción inserta `sessions(module='pauses', status='completed', parent_id=NULL)` con `duration_ms` derivado y `score` recibido + `pause_metrics` 1:1.
 
-La función no recalcula métricas ni reinterpreta la clasificación. Su responsabilidad es persistir el resultado validado por los schemas.
+### `list_pause_sessions(db, user)`
 
-### `list_pause_sessions(user, session)`
+JOIN `sessions + pause_metrics`, filtro `module='pauses' AND parent_id IS NULL`, ordenado por `started_at DESC`. El filtro por `parent_id` excluye sesiones que sean parte de un live.
 
-Consulta todas las sesiones de pausas del usuario autenticado, ordenadas por `created_at` descendente.
+### `get_pause_session(db, user, session_id)`
 
-### `get_pause_session(session_id, user, session)`
+Detalle. Retorna `None` para no-encontrado o cross-user (router → 404 sin distinguir, no se filtra existencia).
 
-Busca una sesión por `session_id` y `user_id`. Al filtrar por ambos campos, evita devolver sesiones pertenecientes a otro usuario. Retorna `None` si no existe o no pertenece al usuario autenticado.
+## 6. Endpoints
 
-## 6. Integración con Gemini AI
+- `POST /pauses/sessions` → 201 / 422.
+- `GET /pauses/sessions` → 200, lista standalone ordenada por `started_at DESC`.
+- `GET /pauses/sessions/{id}` → 200 / 404.
 
-La modalidad normal de pausas no utiliza Gemini AI en backend. La detección de pausas se calcula en frontend mediante análisis de frames de audio y se envía al backend como datos estructurados.
+Todos requieren Bearer JWT.
 
-La integración con Gemini existe únicamente dentro de **Sesión Libre** cuando el usuario selecciona la dimensión `pause`. En ese flujo:
+## 7. Pendientes en el roadmap
 
-1. El frontend envía `pause` dentro de `dims` al WebSocket `/live/session`.
-2. El backend valida `pause` como dimensión permitida.
-3. `prompt_builder.py` agrega instrucciones para evaluar pausas sin marcarlas como negativas por defecto.
-4. `live_gemini.py` exige un objeto `dims.pause` con score, métricas estimadas y clasificación.
-5. El resultado queda guardado como parte de `live_sessions.analyses`, no como una fila en `pause_sessions`.
-
-Ejemplo de respuesta esperada en sesión libre:
-
-```json
-{
-  "dims": {
-    "pause": {
-      "sc": 84,
-      "total_pauses": 3,
-      "avg_pause_ms": 760,
-      "longest_pause_ms": 1200,
-      "silence_ratio": 0.18,
-      "classification": "pausas adecuadas",
-      "note": "Las pausas separan ideas sin cortar la fluidez."
-    }
-  },
-  "overall": 84,
-  "fb": "Buen uso de silencios para ordenar las ideas."
-}
-```
-
-## 7. Endpoints de la API
-
-### POST `/pauses/sessions`
-
-Crea una nueva sesión de pausas persistiendo las métricas calculadas por el frontend.
-
-- **Código:** 201 Created
-- **Autenticación:** Bearer token requerido
-- **Body:** `PauseSessionRequest`
-- **Respuesta:** `PauseSessionResponse`
-
----
-
-### GET `/pauses/sessions`
-
-Lista las sesiones de pausas del usuario autenticado en orden descendente.
-
-- **Autenticación:** Bearer token requerido
-- **Respuesta:** `list[PauseSessionListItem]`
-
----
-
-### GET `/pauses/sessions/{session_id}`
-
-Obtiene el detalle completo de una sesión de pausas.
-
-- **Autenticación:** Bearer token requerido
-- **Parámetros de ruta:** `session_id`
-- **Respuesta:** `PauseSessionResponse`
-- **Errores:** `404` si la sesión no existe o no pertenece al usuario autenticado.
+- **Composición en sesión live**: cuando se reescriba `live`, `create_pause_session` debe aceptar un `parent_id` opcional.
+- **Sesiones abortadas**: hoy solo se persiste `status='completed'`.
+- **Re-evaluar `prompt_text`**: si emerge la necesidad de recordar qué practicó el usuario en cada sesión, la solución correcta es un catálogo de prompts (hoy existe la tabla `prompts` para precision/linguistic_versatility, podría extenderse) y guardar `prompt_id` con FK RESTRICT, NO volver a guardar texto libre como snapshot.

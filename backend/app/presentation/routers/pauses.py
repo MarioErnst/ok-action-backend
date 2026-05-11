@@ -1,90 +1,99 @@
-from fastapi import APIRouter, Depends, HTTPException
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.pause_session import PauseSession
+from app.domain.entities.pause_metrics import PauseMetrics
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.pauses import (
-    PauseInterval,
-    PauseMetrics,
+    PauseMetricsOutput,
+    PauseSessionCreate,
+    PauseSessionDetail,
     PauseSessionListItem,
-    PauseSessionRequest,
-    PauseSessionResponse,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.pauses.sessions import (
+    create_pause_session,
     get_pause_session,
     list_pause_sessions,
-    save_pause_session,
 )
 
 router = APIRouter(prefix="/pauses", tags=["pauses"])
 
 
-def _pause_metrics_response(session: PauseSession) -> PauseMetrics:
-    return PauseMetrics(
-        total_pauses=session.total_pauses,
-        total_pause_duration_ms=session.total_pause_duration_ms,
-        average_pause_ms=float(session.average_pause_ms),
-        longest_pause_ms=session.longest_pause_ms,
-        silence_ratio=float(session.silence_ratio),
-        classification=session.classification,
-        pauses=[PauseInterval(**pause) for pause in session.pauses],
+def _build_detail(
+    session_row: Session, metrics_row: PauseMetrics
+) -> PauseSessionDetail:
+    return PauseSessionDetail(
+        id=session_row.id,
+        user_id=session_row.user_id,
+        started_at=session_row.started_at,
+        ended_at=session_row.ended_at,
+        duration_ms=session_row.duration_ms,
+        score=session_row.score,
+        status=session_row.status,
+        created_at=session_row.created_at,
+        metrics=PauseMetricsOutput.model_validate(metrics_row),
     )
 
 
-def _pause_session_response(session: PauseSession) -> PauseSessionResponse:
-    return PauseSessionResponse(
-        id=str(session.id),
-        prompt_text=session.prompt_text,
-        duration_ms=session.duration_ms,
-        pause_metrics=_pause_metrics_response(session),
-        created_at=session.created_at.isoformat(),
-    )
-
-
-@router.post("/sessions", response_model=PauseSessionResponse, status_code=201)
-async def create_pause_session(
-    request: PauseSessionRequest,
+@router.post(
+    "/sessions",
+    response_model=PauseSessionDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_session_endpoint(
+    payload: PauseSessionCreate,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    pause_session = await save_pause_session(
-        data=request.model_dump(),
-        user=user,
-        session=session,
-    )
-    return _pause_session_response(pause_session)
+    db: AsyncSession = Depends(get_session),
+) -> PauseSessionDetail:
+    try:
+        session_row, metrics_row = await create_pause_session(
+            db=db, user=user, payload=payload
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    return _build_detail(session_row, metrics_row)
 
 
 @router.get("/sessions", response_model=list[PauseSessionListItem])
-async def list_sessions(
+async def list_sessions_endpoint(
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    sessions = await list_pause_sessions(user, session)
+    db: AsyncSession = Depends(get_session),
+) -> list[PauseSessionListItem]:
+    rows = await list_pause_sessions(db=db, user=user)
     return [
         PauseSessionListItem(
-            id=str(item.id),
-            prompt_text=item.prompt_text,
-            duration_ms=item.duration_ms,
-            total_pauses=item.total_pauses,
-            silence_ratio=float(item.silence_ratio),
-            classification=item.classification,
-            created_at=item.created_at.isoformat(),
+            id=session_row.id,
+            started_at=session_row.started_at,
+            ended_at=session_row.ended_at,
+            duration_ms=session_row.duration_ms,
+            score=session_row.score,
+            status=session_row.status,
+            pauses_count=metrics_row.pauses_count,
+            silence_pct=metrics_row.silence_pct,
         )
-        for item in sessions
+        for session_row, metrics_row in rows
     ]
 
 
-@router.get("/sessions/{session_id}", response_model=PauseSessionResponse)
-async def get_session_detail(
-    session_id: str,
+@router.get("/sessions/{session_id}", response_model=PauseSessionDetail)
+async def get_session_endpoint(
+    session_id: UUID,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    result = await get_pause_session(session_id, user, session)
-    if not result:
-        raise HTTPException(status_code=404, detail="Sesion de pausas no encontrada")
-
-    return _pause_session_response(result)
+    db: AsyncSession = Depends(get_session),
+) -> PauseSessionDetail:
+    found = await get_pause_session(db=db, user=user, session_id=session_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de pausas no encontrada",
+        )
+    return _build_detail(*found)

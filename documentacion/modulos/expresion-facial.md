@@ -1,160 +1,110 @@
-# Módulo: Expresión Facial (live emotion tracking)
+# Expresión Facial — Documentación Backend
 
-## Qué hace
+## 1. Descripción funcional
 
-Persiste sesiones de análisis facial en vivo enviadas por el frontend. Una sesión es una secuencia de **eventos de cambio de emoción dominante** detectados en el cliente. El backend valida el payload, calcula la distribución temporal de emociones y persiste todo.
+El módulo de Expresión Facial registra cuán expresivo es el usuario al hablar. El frontend usa modelos ML en el cliente para detectar la emoción dominante frame por frame durante la sesión, agrega el tiempo en cada emoción, y al cierre envía las 7 distribuciones porcentuales al backend.
 
-## Arquitectura
+El backend tiene dos responsabilidades:
 
-```
-Frontend (MediaPipe FaceLandmarker + heurísticas FACS en navegador)
-  ▼ Detección a 15fps. Solo se captura un evento cuando cambia
-  ▼ la emoción dominante.
-  ▼
-POST /facial-expression/sessions
-  ▼ { duration_ms, events: [{t_ms, emotion, gestures}] }
-  ▼
-SessionCreateRequest (validación Pydantic)
-  ▼
-save_facial_expression_session
-  ▼ compute_distribution -> {emotion: pct, dominant, dominant_pct}
-  ▼ INSERT facial_expression_sessions
-  ▼ INSERT N facial_expression_emotion_events
-  ▼
-SessionDetailResponse
-```
+1. Persistir las 7 distribuciones bajo el esquema unificado.
+2. Derivar `top_emotion` y `expressiveness_score` con fórmulas canónicas.
+3. Exponer el histórico standalone del usuario.
 
-El frontend hace toda la detección y clasificación con heurísticas FACS. El backend NO calcula emociones, solo agrega y persiste.
+No procesa video ni hace ML; toda la detección facial vive en frontend.
 
-## Endpoints
+## 2. Capas del módulo
 
-### POST `/facial-expression/sessions`
+| Capa | Ubicación | Responsabilidad |
+|------|-----------|-----------------|
+| Router | `backend/app/presentation/routers/facial_expression.py` | Endpoints HTTP, mapeo de errores. |
+| Schemas | `backend/app/presentation/schemas/facial_expression.py` | Contratos Pydantic v2 con validación de suma=100. |
+| Use cases | `backend/app/use_cases/facial_expression/sessions.py` | Persistencia y derivaciones (`top_emotion`, `expressiveness_score`). |
+| Entidades | `backend/app/domain/entities/session.py`, `facial_expression_metrics.py` | Modelo SQLAlchemy del esquema uniforme. |
 
-Persiste una sesión completa. Devuelve el detalle con distribución calculada.
+## 3. Modelo de datos
 
-**Request body** (`SessionCreateRequest`):
+Una sesión se representa con dos filas: `sessions` raíz y `facial_expression_metrics` 1:1.
 
-```json
-{
-  "duration_ms": 73000,
-  "events": [
-    {"t_ms": 0,     "emotion": "neutral", "gestures": {}},
-    {"t_ms": 4200,  "emotion": "happy",   "gestures": {"mouthSmile": 0.78, "cheekSquint": 0.45}},
-    {"t_ms": 31000, "emotion": "surprise","gestures": {"jawOpen": 0.62}}
-  ]
-}
-```
+### `sessions` (raíz, compartida)
 
-**Response 201** (`SessionDetailResponse`):
+Para facial_expression standalone: `module='facial_expression'`, `parent_id=NULL`, `status='completed'`. `score` lo deriva el backend = `expressiveness_score`.
 
-```json
-{
-  "id": "00000000-0000-0000-0000-000000000001",
-  "duration_ms": 73000,
-  "dominant_emotion": "happy",
-  "dominant_percentage": 37,
-  "emotion_distribution": {"neutral": 6, "happy": 37, "surprise": 57},
-  "created_at": "2026-05-07T22:31:14+00:00",
-  "events": [...]
-}
-```
+### `facial_expression_metrics` (1:1 con `sessions`)
 
-### GET `/facial-expression/sessions`
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `expressiveness_score` | SMALLINT | NOT NULL, CHECK 0-100 | Derivado: `100 - neutral_pct`. |
+| `top_emotion` | top_emotion_enum | NOT NULL | Derivada: emoción con mayor pct (tie-break por orden de enum). |
+| `happy_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % tiempo expresando alegría. |
+| `sad_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % tiempo expresando tristeza. |
+| `angry_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % tiempo expresando enojo. |
+| `surprised_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % tiempo expresando sorpresa. |
+| `fearful_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % tiempo expresando temor. |
+| `disgusted_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % tiempo expresando disgusto. |
+| `neutral_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % tiempo neutral (sin emoción dominante). |
 
-Lista resumida del usuario autenticado, descendente por fecha.
+CHECK adicional: las 7 columnas suman exactamente 100.
 
-### GET `/facial-expression/sessions/{session_id}`
+### Decisiones de diseño
 
-Detalle completo. UUID malformado o sesión no propia → 404.
+- **Tabla `facial_expression_emotion_events` eliminada**: el timeline de eventos de cambio de emoción servía para un eventual replay UI que nunca se construyó. El nuevo diseño solo persiste la distribución agregada, que es lo único que se usa longitudinalmente.
+- **`emotion_distribution JSONB` reemplazada por 7 columnas explícitas**: queryable, indexable, tipada con CHECK individual + CHECK de suma. Ningún JSONB caja-de-sastre.
+- **`top_emotion` derivado en backend**: max de los 7 pcts. Tie-break por orden enum (happy > sad > angry > surprised > fearful > disgusted > neutral) — pensado para que en empates con neutral gane la emoción expresiva, que es lo más útil mostrarle al usuario.
+- **`expressiveness_score` derivado en backend = `100 - neutral_pct`**: fórmula canónica simple ("entre menos neutral, más expresivo"). Precedente loudness/accentuation. Si quieres una fórmula más nuanced (variedad, intensidad, picos), cambia en `_derive_expressiveness_score` en un solo lugar.
+- **`score` (sessions) = `expressiveness_score`**: misma magnitud, una sola fuente de verdad. Frontend muestra siempre lo mismo en cualquier vista.
+- **Renombre de emociones contra el viejo schema**: el esquema viejo usaba `surprise/fear/disgust`, el nuevo usa `surprised/fearful/disgusted` para alinear con el ENUM nativo `top_emotion_enum`. Ruptura de contrato; frontend tiene que adaptarse en Fase 4.
+- **`gestures` (free-form dict por evento) eliminado**: parte de la tabla de eventos descartada, sin uso analítico.
+- **URL kebab `/facial-expression`**: convención web para multi-palabras. El module enum interno sigue snake (`facial_expression`); no se mezclan contextos.
 
-## Algoritmo: distribución temporal (`distribution.py`)
+## 4. Esquemas
 
-Cada evento marca el instante en que **comienza** una emoción. El tiempo en cada emoción es la diferencia con el siguiente evento (o con `duration_ms` para el último). Las repeticiones de la misma emoción acumulan.
+### Entrada
 
-Ejemplo:
+`FacialExpressionMetricsInput`: 7 `*_pct` (cada 0-100). Validador `validate_pct_sum` chequea que sumen 100.
 
-```
-duration = 10000ms
-events = [{t:0, "happy"}, {t:4000, "neutral"}]
-  -> happy: 0..4000  = 4000ms (40%)
-  -> neutral: 4000..10000 = 6000ms (60%)
-```
+`FacialExpressionSessionCreate`: `started_at`, `ended_at`, `metrics`. Validador `validate_time_range` chequea `ended_at > started_at`. **Sin `expressiveness_score`, `top_emotion` ni `score`**: backend los deriva.
 
-### Largest-remainder rounding
+### Salida
 
-Para que las barras siempre sumen 100%, los porcentajes se calculan con **largest-remainder rounding**: floor de cada porcentaje y luego se reparte el residuo (100 - sum) sumando 1 a las emociones con mayor parte fraccional. Esto evita el bug de UX donde tres tercios renderean como 33+33+33=99%.
+`FacialExpressionMetricsOutput`: 7 `*_pct` + `expressiveness_score` + `top_emotion`.
 
-### Sin eventos o duración cero
+`FacialExpressionSessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`.
 
-`compute_distribution` devuelve `({}, None, None)` cuando no hay eventos o `duration_ms == 0`. Es un caso defensivo: el schema exige `duration_ms >= 0` y al menos un evento es esperable, pero el código no asume que las dos cosas se cumplen.
+`FacialExpressionSessionListItem` (compacto): `id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `top_emotion`, `expressiveness_score`. Ambos derivados expuestos para que el card del timeline muestre el resumen.
 
-## Validación de payload
+## 5. Casos de uso
 
-Schema Pydantic `SessionCreateRequest`. Cualquier violación → 422.
+### `_derive_top_emotion(payload)` — `sessions.py`
 
-| Constante                    | Valor    | Razón                                              |
-|------------------------------|----------|----------------------------------------------------|
-| `MAX_EVENTS_PER_SESSION`     | 5 000    | Sesiones reales tienen <100 eventos; 5k es slack   |
-| `MAX_DURATION_MS`            | 1 800 000| 30 minutos, suficiente para casos extremos         |
-| `MAX_GESTURE_KEYS`           | 60       | 52 blendshapes ARKit + slack                       |
-| `ALLOWED_EMOTIONS`           | set de 7 | Allow-list server-side: `happy`, `sad`, `angry`, `surprise`, `fear`, `disgust`, `neutral` |
+Construye un dict `{TopEmotionEnum: pct}` y aplica `max(_EMOTION_ORDER, key=lambda e: pcts[e])`. El argumento `key` desempata por orden definido en `_EMOTION_ORDER`.
 
-| Campo                   | Restricción                  |
-|-------------------------|------------------------------|
-| `duration_ms`           | `0 <= n <= MAX_DURATION_MS`  |
-| `events`                | `<= MAX_EVENTS_PER_SESSION`  |
-| `events[].t_ms`         | `0 <= n <= MAX_DURATION_MS`  |
-| `events[].emotion`      | `1..20` chars + en allow-list |
-| `events[].gestures`     | objeto con `<= 60` claves    |
+### `_derive_expressiveness_score(payload)` — `sessions.py`
 
-El router valida emociones contra `ALLOWED_EMOTIONS` antes de persistir y devuelve 422 con mensaje `"Emoción no soportada: <id>"` si encuentra una no permitida. Esto evita que typos del cliente corrompan la analítica silenciosamente.
+`100 - neutral_pct`. Una línea, separada en función para que el cambio de fórmula sea trivial.
 
-## Manejo de errores
+### `create_facial_expression_session(db, user, payload)`
 
-- `try/except` envuelve la llamada al caso de uso. Si falla, `await session.rollback()` antes de re-lanzar — la conexión vuelve al pool limpia.
-- UUID malformado en GET → 404 (validado con `uuid.UUID(s)` antes de tocar la DB).
-- Eventos con emoción fuera de la allow-list → 422.
+En una transacción inserta `sessions(module='facial_expression', status='completed', parent_id=NULL)` con `duration_ms`/`score` derivados + `facial_expression_metrics` con `expressiveness_score`/`top_emotion` derivados y las 7 pct copiadas del input.
 
-## Tablas
+### `list_facial_expression_sessions(db, user)`
 
-### `facial_expression_sessions`
+JOIN `sessions + facial_expression_metrics`, filtra `module='facial_expression' AND parent_id IS NULL`, ordena por `started_at DESC`.
 
-| Columna             | Tipo            | Descripción                                       |
-|---------------------|-----------------|---------------------------------------------------|
-| id                  | UUID PK         | Identificador de sesión                           |
-| user_id             | UUID FK         | Owner; CASCADE on user delete                     |
-| duration_ms         | INTEGER         | Duración total de la sesión                       |
-| dominant_emotion    | VARCHAR(20) NULL| Emoción con mayor tiempo; NULL si sin eventos     |
-| dominant_percentage | INTEGER NULL    | % de tiempo en la dominante; NULL si sin eventos  |
-| emotion_distribution| JSONB           | Map `{emotion: percentage}` que suma 100          |
-| created_at          | TIMESTAMPTZ     | Fecha de creación                                 |
+### `get_facial_expression_session(db, user, session_id)`
 
-### `facial_expression_emotion_events`
+Detalle. Retorna `None` para no-encontrado o cross-user (router → 404 sin distinguir).
 
-| Columna     | Tipo        | Descripción                                       |
-|-------------|-------------|---------------------------------------------------|
-| id          | UUID PK     | Identificador de evento                           |
-| session_id  | UUID FK     | Sesión a la que pertenece; CASCADE                |
-| t_ms        | INTEGER     | Timestamp dentro de la sesión                     |
-| emotion     | VARCHAR(20) | Emoción dominante a partir de este instante       |
-| gestures    | JSONB       | Snapshot de gestos activos `{gesture_id: 0..1}`   |
+## 6. Endpoints
 
-Índice `ix_facial_expression_emotion_events_session_id` para acelerar joins por sesión.
+- `POST /facial-expression/sessions` → 201 / 422 (incluye 422 si las 7 pct no suman 100).
+- `GET /facial-expression/sessions` → 200, lista standalone ordenada por `started_at DESC`.
+- `GET /facial-expression/sessions/{id}` → 200 / 404.
 
-## Migración
+Todos requieren Bearer JWT.
 
-`c1d2e3f4a5b6_replace_facial_question_results_with_emotion_events.py` reemplaza el modelo anterior basado en preguntas. Usa `DROP TABLE IF EXISTS` para que sea aplicable sobre cualquier estado intermedio (ej. una DB local que nunca había aplicado la migración previa).
+## 7. Pendientes en el roadmap
 
-## Decisiones de diseño
-
-### Frontend detecta, backend solo agrega
-Al mover la clasificación al cliente (con MediaPipe + heurísticas FACS) bajamos el costo de cómputo del servidor a casi cero y eliminamos la necesidad de procesar imágenes en el backend. El backend solo hace agregaciones temporales sobre eventos discretos.
-
-### Allow-list de emociones server-side
-El frontend podría tener bugs o un atacante podría POST-ear emociones inventadas. La allow-list garantiza que la columna `dominant_emotion` y las claves de `emotion_distribution` siempre sean valores conocidos para analytics.
-
-### Largest-remainder en lugar de redondeo simple
-Las barras de UI suman 100% siempre. Sin esto, un usuario ve "happy 33 + sad 33 + neutral 33 = 99" y duda de los datos.
-
-### `dominant_*` nullable
-Permite distinguir "sesión sin eventos" de "ningún emotion ganó (imposible)". El frontend renderiza un `—` cuando es NULL.
+- **Composición en sesión live**: cuando se reescriba `live`, `create_facial_expression_session` debe aceptar `parent_id` opcional.
+- **Sesiones abortadas**: hoy solo `status='completed'`.
+- **Replay UI**: si en el futuro se implementa replay frame-a-frame, hay que reintroducir una tabla de eventos (no la vieja, una nueva con `t_ms` + `top_emotion` solamente). Por ahora no aporta.

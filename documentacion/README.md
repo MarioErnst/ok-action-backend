@@ -17,6 +17,7 @@ Esta carpeta contiene la documentación técnica del backend de OK Action. Sirve
 | Fluidez | [modulos/fluidez.md](modulos/fluidez.md) |
 | Consistencia | [modulos/consistencia.md](modulos/consistencia.md) |
 | Videos | [modulos/videos.md](modulos/videos.md) |
+| Expresión Corporal | [modulos/expresion-corporal.md](modulos/expresion-corporal.md) |
 
 ## Convenciones
 

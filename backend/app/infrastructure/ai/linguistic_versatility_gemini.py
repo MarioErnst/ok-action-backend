@@ -44,20 +44,21 @@ versatility_score (0-100):
 - Ignorá repeticiones de palabras de función (artículos, pronombres, conectores básicos como "y", "que", "de").
 - Penalizá repeticiones de muletillas léxicas (la misma palabra de contenido usada 3+ veces si tiene alternativas claras).
 
-vocabulary_richness (1, 2 o 3):
-- 1 = básico: usa solo palabras frecuentes y comunes del lenguaje cotidiano.
-- 2 = intermedio: combina palabras comunes con algunas más específicas, técnicas o menos frecuentes.
-- 3 = avanzado: usa vocabulario rico, variado, con palabras precisas, técnicas o de registro elevado.
+vocabulary_richness (0-100):
+- Mide la riqueza léxica observada en la respuesta.
+- 0-33 = básico: usa solo palabras frecuentes y comunes del lenguaje cotidiano.
+- 34-66 = intermedio: combina palabras comunes con algunas más específicas, técnicas o menos frecuentes.
+- 67-100 = avanzado: usa vocabulario rico, variado, con palabras precisas, técnicas o de registro elevado.
 
 feedback:
-- 1 o 2 oraciones en español, concretas y útiles.
+- 1 o 2 oraciones en español rioplatense, concretas y útiles.
 - Si versatility_score es alto, destacá una virtud específica observada.
 - Si es bajo, mencioná 1 palabra que se repitió y sugerí 1 sinónimo concreto.
 - No usés frases genéricas tipo "buen trabajo" o "podés mejorar". Sé específico.
 
 IMPORTANTE:
 - NO penalices por ruido de fondo ni calidad de audio.
-- Si el audio es ininteligible o la persona no habló, audio_intelligible=false y versatility_score=0, vocabulary_richness=1, feedback="No se pudo procesar el audio."
+- Si el audio es ininteligible o la persona no habló, audio_intelligible=false y versatility_score=0, vocabulary_richness=0, feedback="No se pudo procesar el audio."
 - Si pudiste evaluar el habla, audio_intelligible=true.
 - Escribí el feedback en español rioplatense (vos, no tú).
 """
@@ -76,8 +77,8 @@ versatility_score (0-100):
 - Ignorá repeticiones de palabras de función (artículos, pronombres, conectores básicos).
 - Penalizá repeticiones de palabras de contenido cuando hay alternativas claras.
 
-vocabulary_richness (1, 2 o 3):
-- 1 = básico, 2 = intermedio, 3 = avanzado (palabras precisas, técnicas o de registro elevado).
+vocabulary_richness (0-100):
+- 0-33 = básico, 34-66 = intermedio, 67-100 = avanzado (palabras precisas, técnicas o de registro elevado).
 
 feedback:
 - 1 o 2 oraciones en español, concretas. Si bajó la versatilidad, mencioná una palabra que se repitió y un sinónimo. Si fue alta, destacá una virtud específica.

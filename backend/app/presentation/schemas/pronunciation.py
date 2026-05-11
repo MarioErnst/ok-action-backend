@@ -1,63 +1,88 @@
-from pydantic import BaseModel
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class PhonemeErrorSchema(BaseModel):
+# Per-phrase Gemini evaluation (ephemeral, never persisted)
+
+
+class PhonemeError(BaseModel):
     phoneme: str
     word: str
     actual_issue: str
     suggestion: str
 
 
-class PhrasePronunciationResponse(BaseModel):
+class PhraseEvaluation(BaseModel):
     phrase_text: str
     phrase_index: int
-    overall_score: float
-    vowel_score: float
-    consonant_score: float
-    fluency_score: float
-    intelligibility_score: float
+    overall_score: int = Field(ge=0, le=100)
+    vowel_score: int = Field(ge=0, le=100)
+    consonant_score: int = Field(ge=0, le=100)
+    fluency_score: int = Field(ge=0, le=100)
+    intelligibility_score: int = Field(ge=0, le=100)
     feedback: str
-    phoneme_errors: list[PhonemeErrorSchema]
+    phoneme_errors: list[PhonemeError]
 
 
-class SavePhrasePronunciationDto(BaseModel):
-    phrase_text: str
-    phrase_index: int
-    overall_score: float
-    vowel_score: float
-    consonant_score: float
-    fluency_score: float
-    intelligibility_score: float
-    feedback: str
-    phoneme_errors: list[PhonemeErrorSchema]
+# Persisted session metrics
 
 
-class PronunciationSessionRequest(BaseModel):
+class PronunciationMetricsInput(BaseModel):
+    level: str = Field(min_length=1, max_length=20)
+    vowel_score: int = Field(ge=0, le=100)
+    consonant_score: int = Field(ge=0, le=100)
+    fluency_score: int = Field(ge=0, le=100)
+    intelligibility_score: int = Field(ge=0, le=100)
+    phrases_count: int = Field(ge=1)
+
+
+class PronunciationMetricsOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     level: str
-    overall_score: float
-    vowel_score: float
-    consonant_score: float
-    fluency_score: float
-    intelligibility_score: float
-    summary_feedback: str
-    evaluations: list[SavePhrasePronunciationDto]
+    vowel_score: int
+    consonant_score: int
+    fluency_score: int
+    intelligibility_score: int
+    phrases_count: int
 
 
-class PronunciationSessionResponse(BaseModel):
-    id: str
-    level: str
-    overall_score: float
-    vowel_score: float
-    consonant_score: float
-    fluency_score: float
-    intelligibility_score: float
-    summary_feedback: str
-    created_at: str
-    evaluations: list[PhrasePronunciationResponse]
+class PronunciationSessionCreate(BaseModel):
+    started_at: datetime
+    ended_at: datetime
+    metrics: PronunciationMetricsInput
+    parent_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "PronunciationSessionCreate":
+        if self.ended_at <= self.started_at:
+            raise ValueError("ended_at must be greater than started_at")
+        return self
+
+
+class PronunciationSessionDetail(BaseModel):
+    id: UUID
+    user_id: UUID
+    started_at: datetime
+    ended_at: datetime
+    duration_ms: int
+    score: int
+    status: Literal["active", "completed", "aborted"]
+    created_at: datetime
+    metrics: PronunciationMetricsOutput
 
 
 class PronunciationSessionListItem(BaseModel):
-    id: str
+    id: UUID
+    started_at: datetime
+    ended_at: datetime
+    duration_ms: int
+    score: int
+    status: Literal["active", "completed", "aborted"]
     level: str
-    overall_score: float
-    created_at: str
+    phrases_count: int

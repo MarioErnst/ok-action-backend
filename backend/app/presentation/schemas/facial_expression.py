@@ -1,72 +1,95 @@
-from pydantic import BaseModel, ConfigDict, Field
+from __future__ import annotations
 
-# --- Limits ---
-# An "event" is recorded only when the dominant emotion changes, so realistic
-# sessions produce tens to a few hundred events. The cap protects against
-# malicious payloads while still allowing very long or rapidly-changing sessions.
-MAX_EVENTS_PER_SESSION = 5000
-MAX_DURATION_MS = 30 * 60 * 1000  # 30 minutes
-MAX_GESTURE_KEYS = 60             # there are 52 ARKit blendshapes; 60 is a soft cap
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-# --- Allowed values ---
-# Server-side allow-list keeps the database column clean and lets the frontend
-# add new emotions without the backend silently accepting typos.
-ALLOWED_EMOTIONS = {"happy", "sad", "angry", "surprise", "fear", "disgust", "neutral"}
+class FacialExpressionMetricsInput(BaseModel):
+    """Aggregated emotion distribution submitted by the client.
+
+    Frontend computes the 7 percentages from its own emotion timeline before
+    sending; the backend persists them as-is and derives top_emotion and
+    expressiveness_score from these values.
+    """
+
+    happy_pct: int = Field(ge=0, le=100)
+    sad_pct: int = Field(ge=0, le=100)
+    angry_pct: int = Field(ge=0, le=100)
+    surprised_pct: int = Field(ge=0, le=100)
+    fearful_pct: int = Field(ge=0, le=100)
+    disgusted_pct: int = Field(ge=0, le=100)
+    neutral_pct: int = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_pct_sum(self) -> "FacialExpressionMetricsInput":
+        total = (
+            self.happy_pct
+            + self.sad_pct
+            + self.angry_pct
+            + self.surprised_pct
+            + self.fearful_pct
+            + self.disgusted_pct
+            + self.neutral_pct
+        )
+        if total != 100:
+            raise ValueError(
+                f"emotion percentages must sum to 100, got {total}"
+            )
+        return self
 
 
-# --- Request ---
-
-class EmotionEventInput(BaseModel):
-    """One detected change of dominant emotion within a session."""
-
-    t_ms: int = Field(ge=0, le=MAX_DURATION_MS)
-    emotion: str = Field(min_length=1, max_length=20)
-    # gestures is a free-form map of gesture_id -> intensity 0..1; we cap the
-    # number of keys to avoid unbounded JSON growth from a malicious client.
-    gestures: dict[str, float] = Field(default_factory=dict, max_length=MAX_GESTURE_KEYS)
-
-
-class SessionCreateRequest(BaseModel):
-    """Persist a completed facial-expression analysis session."""
-
-    duration_ms: int = Field(ge=0, le=MAX_DURATION_MS)
-    events: list[EmotionEventInput] = Field(default_factory=list, max_length=MAX_EVENTS_PER_SESSION)
-
-
-# --- Response ---
-
-class EmotionEventResponse(BaseModel):
-    """Single event in the saved session."""
-
+class FacialExpressionMetricsOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    t_ms: int
-    emotion: str
-    gestures: dict[str, float]
+    happy_pct: int
+    sad_pct: int
+    angry_pct: int
+    surprised_pct: int
+    fearful_pct: int
+    disgusted_pct: int
+    neutral_pct: int
+    expressiveness_score: int
+    top_emotion: Literal[
+        "happy", "sad", "angry", "surprised", "fearful", "disgusted", "neutral"
+    ]
 
 
-class SessionDetailResponse(BaseModel):
-    """Full session with computed distribution and event timeline."""
+class FacialExpressionSessionCreate(BaseModel):
+    started_at: datetime
+    ended_at: datetime
+    metrics: FacialExpressionMetricsInput
+    parent_id: UUID | None = None
 
-    model_config = ConfigDict(from_attributes=True)
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "FacialExpressionSessionCreate":
+        if self.ended_at <= self.started_at:
+            raise ValueError("ended_at must be greater than started_at")
+        return self
 
-    id: str
+
+class FacialExpressionSessionDetail(BaseModel):
+    id: UUID
+    user_id: UUID
+    started_at: datetime
+    ended_at: datetime
     duration_ms: int
-    dominant_emotion: str | None
-    dominant_percentage: int | None
-    emotion_distribution: dict[str, int]
-    created_at: str
-    events: list[EmotionEventResponse]
+    score: int
+    status: Literal["active", "completed", "aborted"]
+    created_at: datetime
+    metrics: FacialExpressionMetricsOutput
 
 
-class SessionListItem(BaseModel):
-    """Summary for the sessions list."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
+class FacialExpressionSessionListItem(BaseModel):
+    id: UUID
+    started_at: datetime
+    ended_at: datetime
     duration_ms: int
-    dominant_emotion: str | None
-    dominant_percentage: int | None
-    created_at: str
+    score: int
+    status: Literal["active", "completed", "aborted"]
+    top_emotion: Literal[
+        "happy", "sad", "angry", "surprised", "fearful", "disgusted", "neutral"
+    ]
+    expressiveness_score: int

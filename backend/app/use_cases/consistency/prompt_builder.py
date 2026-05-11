@@ -37,6 +37,9 @@ CRITERIOS DE EVALUACION:
 - structure_consistency_score (0-100): progresion ordenada de inicio, desarrollo y cierre.
 - score (0-100): puntaje global. Calcula aproximadamente:
   round(rhythm*0.18 + volume*0.12 + clarity*0.18 + focus*0.2 + confidence*0.14 + structure*0.18).
+- active_pct (0-100): porcentaje del tiempo total del audio en que el hablante estuvo
+  produciendo voz activamente (excluye silencios prolongados, pausas para respirar largas
+  y secciones sin voz). Si audio_intelligible=false, active_pct=0.
 
 Debes dividir la evaluacion en tres tramos logicos:
 - inicio: arranque de la respuesta.

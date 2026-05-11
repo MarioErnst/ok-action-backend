@@ -1,103 +1,115 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict, Field
 
-# --- Limits ---
-# Audio is short (one answer per round). 5MB caps a runaway client without
-# blocking realistic recordings (~30s mp4 ≈ 250KB; ~30s wav 16kHz mono ≈ 1MB).
-MAX_AUDIO_BYTES = 5 * 1024 * 1024
+
+# Catalog
 
 
-# --- Allowed values ---
-ALLOWED_MODES = {"guided", "free"}
-ALLOWED_RICHNESS = {1, 2, 3}  # 1=básico, 2=intermedio, 3=avanzado
-
-
-# --- Request ---
-
-class StartSessionRequest(BaseModel):
-    """Open a new guided session. Total rounds is set by the backend based on
-    how many active questions are in the database."""
-
-    pass
-
-
-# Free-mode session creates and finalizes in a single request. The audio is
-# uploaded as multipart/form-data, not in the JSON body, so there is no
-# request schema for the body itself — the router reads the file directly.
-
-
-# --- Response ---
-
-class QuestionSchema(BaseModel):
-    """Public shape of a versatility question."""
-
+class PromptOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    id: UUID
     text: str
     category: str
-    difficulty_level: str
+    difficulty: str
+
+
+# Session lifecycle
+
+
+class StartSessionRequest(BaseModel):
+    mode: Literal["guided", "free"]
+    rounds_total: int = Field(ge=1, le=20)
+    parent_id: UUID | None = None
 
 
 class StartSessionResponse(BaseModel):
-    """Returned from POST /sessions: id of the new session and questions to ask."""
+    session_id: UUID
+    started_at: datetime
+    mode: Literal["guided", "free"]
+    rounds_total: int
+    prompts: list[PromptOut]
 
-    session_id: str
-    total_rounds: int
-    questions: list[QuestionSchema]
 
+class EvaluateRoundRequestForm(BaseModel):
+    """Documentation-only mirror of the multipart Form fields. FastAPI does
+    not support nested Pydantic models for multipart, so the router declares
+    each field with Form(...) directly. prompt_id is required in guided mode
+    and must be omitted in free mode; the router validates that pairing."""
 
-class RoundResultResponse(BaseModel):
-    """One evaluated answer within a session."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    question_id: str | None
-    question_text: str | None
-    versatility_score: int | None = Field(default=None, ge=0, le=100)
-    vocabulary_richness: int | None = Field(default=None, ge=1, le=3)
-    feedback: str | None
-    audio_intelligible: bool
-    created_at: str
+    round_index: int = Field(ge=0)
+    prompt_id: UUID | None = None
 
 
 class EvaluateRoundResponse(BaseModel):
-    """Returned after a guided round is uploaded and analyzed."""
+    """Per-round evaluation result. Carries Gemini's feedback for ephemeral
+    display in the UI; only scores and is_audio_intelligible are persisted."""
 
-    round_id: str
-    audio_intelligible: bool
-    versatility_score: int | None = Field(default=None, ge=0, le=100)
-    vocabulary_richness: int | None = Field(default=None, ge=1, le=3)
-    feedback: str | None
-    completed_rounds: int
-    total_rounds: int
+    round_index: int
+    prompt_id: UUID | None
+    is_audio_intelligible: bool
+    score: int | None = Field(default=None, ge=0, le=100)
+    vocabulary_richness: int | None = Field(default=None, ge=0, le=100)
+    feedback: str
 
 
-class SessionDetailResponse(BaseModel):
-    """Full session with all rounds."""
+class FinalizeSessionResponse(BaseModel):
+    session_id: UUID
+    status: Literal["completed", "aborted"]
+    score: int | None
+    rounds_completed: int
+    rounds_total: int
+    vocabulary_richness_avg: int | None
 
+
+# Persisted detail
+
+
+class LinguisticVersatilityRoundOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
-    mode: str
-    total_rounds: int
-    completed_rounds: int
-    overall_score: int | None
-    status: str
-    created_at: str
-    completed_at: str | None
-    rounds: list[RoundResultResponse]
+    round_index: int
+    prompt_id: UUID | None
+    score: int | None
+    vocabulary_richness: int | None
+    is_audio_intelligible: bool
 
 
-class SessionListItem(BaseModel):
-    """Summary for the history list."""
-
+class LinguisticVersatilityMetricsOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
-    mode: str
-    overall_score: int | None
-    status: str
-    created_at: str
+    mode: Literal["guided", "free"]
+    rounds_total: int
+    rounds_completed: int
+    vocabulary_richness_avg: int | None
 
 
+class LinguisticVersatilitySessionDetail(BaseModel):
+    id: UUID
+    user_id: UUID
+    started_at: datetime
+    ended_at: datetime | None
+    duration_ms: int | None
+    score: int | None
+    status: Literal["active", "completed", "aborted"]
+    created_at: datetime
+    metrics: LinguisticVersatilityMetricsOutput
+    rounds: list[LinguisticVersatilityRoundOutput]
+
+
+class LinguisticVersatilitySessionListItem(BaseModel):
+    id: UUID
+    started_at: datetime
+    ended_at: datetime | None
+    duration_ms: int | None
+    score: int | None
+    status: Literal["active", "completed", "aborted"]
+    mode: Literal["guided", "free"]
+    rounds_total: int
+    rounds_completed: int
+    vocabulary_richness_avg: int | None

@@ -1,181 +1,303 @@
-# Full module documentation: documentacion/modulos/precision.md
-import uuid
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from uuid import UUID
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.precision_question import PrecisionQuestion as PrecisionQuestionEntity
+from app.domain.entities.enums import ModuleEnum
+from app.domain.entities.precision_metrics import PrecisionMetrics
+from app.domain.entities.precision_round import PrecisionRound
+from app.domain.entities.prompt import Prompt
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
-from app.infrastructure.ai.precision_gemini import PrecisionGeminiError
+from app.infrastructure.ai.precision_gemini import (
+    GeminiPrecisionService,
+    PrecisionGeminiError,
+)
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.precision import (
     EvaluateRoundResponse,
     FinalizeSessionResponse,
-    PrecisionHistoryItem,
-    PrecisionQuestionSchema,
-    PrecisionRoundResponse,
-    PrecisionSessionResponse,
+    PrecisionMetricsOutput,
+    PrecisionRoundOutput,
+    PrecisionSessionDetail,
+    PrecisionSessionListItem,
+    PromptOut,
+    StartSessionRequest,
     StartSessionResponse,
 )
-from app.use_cases.precision.abandon_precision_session import abandon_precision_session
-from app.use_cases.precision.evaluate_precision_response import evaluate_precision_response
-from app.use_cases.precision.finalize_precision_session import finalize_precision_session
-from app.use_cases.precision.get_precision_history import get_precision_history
-from app.use_cases.precision.get_precision_session import get_precision_session
-from app.use_cases.precision.start_precision_session import start_precision_session
+from app.use_cases.live.sessions import InvalidParentLiveError
+from app.use_cases.precision.sessions import (
+    NotEnoughPromptsError,
+    PromptNotAvailableError,
+    RoundAlreadyEvaluatedError,
+    RoundIndexOutOfRangeError,
+    SessionNotActiveError,
+    SessionNotFoundError,
+    abandon_precision_session,
+    evaluate_round,
+    finalize_precision_session,
+    get_precision_session,
+    list_precision_sessions,
+    start_precision_session,
+)
 
 router = APIRouter(prefix="/precision", tags=["precision"])
 
+_gemini = GeminiPrecisionService()
 
-@router.post("/sessions", response_model=StartSessionResponse, status_code=201)
-async def start_session(
-    total_rounds: int = 5,
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    session, questions = await start_precision_session(
-        db, user_id=user.id, total_rounds=total_rounds
+
+def _build_detail(
+    session_row: Session,
+    metrics_row: PrecisionMetrics,
+    round_rows: list[PrecisionRound],
+) -> PrecisionSessionDetail:
+    return PrecisionSessionDetail(
+        id=session_row.id,
+        user_id=session_row.user_id,
+        started_at=session_row.started_at,
+        ended_at=session_row.ended_at,
+        duration_ms=session_row.duration_ms,
+        score=session_row.score,
+        status=session_row.status,
+        created_at=session_row.created_at,
+        metrics=PrecisionMetricsOutput.model_validate(metrics_row),
+        rounds=[PrecisionRoundOutput.model_validate(r) for r in round_rows],
     )
-    await db.commit()
+
+
+@router.post(
+    "/sessions",
+    response_model=StartSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_session_endpoint(
+    payload: StartSessionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> StartSessionResponse:
+    try:
+        session_row, _, prompts = await start_precision_session(
+            db=db,
+            user=user,
+            rounds_total=payload.rounds_total,
+            parent_id=payload.parent_id,
+        )
+    except NotEnoughPromptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+
     return StartSessionResponse(
-        session_id=str(session.id),
-        questions=[
-            PrecisionQuestionSchema(
-                id=str(q.id),
-                text=q.text,
-                category=q.category,
-                difficulty_level=q.difficulty_level,
-            )
-            for q in questions
-        ],
-        total_rounds=session.total_rounds,
+        session_id=session_row.id,
+        started_at=session_row.started_at,
+        rounds_total=payload.rounds_total,
+        prompts=[PromptOut.model_validate(p) for p in prompts],
     )
 
 
-@router.post("/sessions/{session_id}/rounds", response_model=EvaluateRoundResponse)
-async def evaluate_round(
-    session_id: uuid.UUID,
-    audio: UploadFile = File(...),
-    question_id: str = Form(...),
-    noise_level: str = Form(default="low"),
-    audio_duration_secs: float | None = Form(default=None),
-    db: AsyncSession = Depends(get_session),
+@router.post(
+    "/sessions/{session_id}/rounds",
+    response_model=EvaluateRoundResponse,
+)
+async def evaluate_round_endpoint(
+    session_id: UUID,
+    audio: UploadFile,
+    round_index: int = Form(..., ge=0),
+    prompt_id: UUID = Form(...),
     user: User = Depends(get_current_user),
-):
+    db: AsyncSession = Depends(get_session),
+) -> EvaluateRoundResponse:
+    """Evaluate the user's audio answer for one round of the session.
+
+    The router orchestrates the Gemini call (it owns the HTTP/audio boundary)
+    so the use_case only consumes the parsed evaluation dict. Returns
+    Gemini's transcript and feedback text for ephemeral display in the UI;
+    persistence keeps only scores and is_audio_intelligible.
+    """
+
     audio_bytes = await audio.read()
     mime_type = audio.content_type or "audio/webm"
 
-    # Fetch question text snapshot so a missing question always returns 404, never 502.
-    q_result = await db.get(PrecisionQuestionEntity, uuid.UUID(question_id))
-    if not q_result:
-        raise HTTPException(status_code=404, detail="Question not found")
+    # Fetch the prompt text up front so a missing/inactive prompt fails with
+    # 422 here instead of leaking through Gemini as a 502. The use_case
+    # re-checks the prompt for its own invariants (module, active) — the two
+    # queries are cheap and keep router and use_case responsibilities clean.
+    prompt_row = (
+        await db.execute(
+            select(Prompt).where(
+                Prompt.id == prompt_id,
+                Prompt.module == ModuleEnum.precision,
+                Prompt.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if prompt_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"prompt {prompt_id} not found or not available for precision",
+        )
 
     try:
-        precision_round = await evaluate_precision_response(
-            db=db,
-            session_id=session_id,
-            question_id=uuid.UUID(question_id),
-            question_text=q_result.text,
-            audio_bytes=audio_bytes,
-            mime_type=mime_type,
-            noise_level=noise_level,
-            audio_duration_secs=audio_duration_secs,
+        evaluation = await _gemini.evaluate_response(
+            audio_bytes, mime_type, prompt_row.text
         )
     except PrecisionGeminiError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-    await db.commit()
-    return EvaluateRoundResponse(
-        round_id=str(precision_round.id),
-        audio_intelligible=precision_round.audio_intelligible,
-        relevance_score=precision_round.relevance_score,
-        directness_score=precision_round.directness_score,
-        conciseness_score=precision_round.conciseness_score,
-        overall_score=precision_round.overall_score,
-        feedback=precision_round.feedback,
-        strengths=precision_round.strengths,
-        improvement_areas=precision_round.improvement_areas,
-    )
-
-
-@router.post("/sessions/{session_id}/finalize", response_model=FinalizeSessionResponse)
-async def finalize_session(
-    session_id: uuid.UUID,
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    session = await finalize_precision_session(db, session_id)
-    await db.commit()
-    return FinalizeSessionResponse(
-        session_id=str(session.id),
-        overall_score=float(session.overall_score) if session.overall_score is not None else None,
-        completed_rounds=session.completed_rounds,
-        status=session.status,
-    )
-
-
-@router.patch("/sessions/{session_id}/abandon", status_code=204)
-async def abandon_session(
-    session_id: uuid.UUID,
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    await abandon_precision_session(db, session_id)
-    await db.commit()
-
-
-@router.get("/sessions/{session_id}", response_model=PrecisionSessionResponse)
-async def get_session_detail(
-    session_id: uuid.UUID,
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    session = await get_precision_session(db, session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return PrecisionSessionResponse(
-        id=str(session.id),
-        mode=session.mode,
-        total_rounds=session.total_rounds,
-        completed_rounds=session.completed_rounds,
-        overall_score=float(session.overall_score) if session.overall_score is not None else None,
-        status=session.status,
-        created_at=session.created_at.isoformat(),
-        rounds=[
-            PrecisionRoundResponse(
-                id=str(r.id),
-                question_text=r.question_text,
-                relevance_score=r.relevance_score,
-                directness_score=r.directness_score,
-                conciseness_score=r.conciseness_score,
-                overall_score=r.overall_score,
-                feedback=r.feedback,
-                strengths=r.strengths,
-                improvement_areas=r.improvement_areas,
-                noise_level=r.noise_level,
-                audio_intelligible=r.audio_intelligible,
-                created_at=r.created_at.isoformat(),
-            )
-            for r in session.rounds
-        ],
-    )
-
-
-@router.get("/history", response_model=list[PrecisionHistoryItem])
-async def history(
-    db: AsyncSession = Depends(get_session),
-    user: User = Depends(get_current_user),
-):
-    sessions = await get_precision_history(db, user.id)
-    return [
-        PrecisionHistoryItem(
-            id=str(s.id),
-            overall_score=float(s.overall_score) if s.overall_score is not None else None,
-            completed_rounds=s.completed_rounds,
-            total_rounds=s.total_rounds,
-            status=s.status,
-            created_at=s.created_at.isoformat(),
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
         )
-        for s in sessions
+
+    try:
+        round_row = await evaluate_round(
+            db=db,
+            user=user,
+            session_id=session_id,
+            round_index=round_index,
+            prompt_id=prompt_id,
+            gemini_evaluation=evaluation,
+        )
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de precisión no encontrada",
+        )
+    except SessionNotActiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+    except RoundAlreadyEvaluatedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+    except RoundIndexOutOfRangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    except PromptNotAvailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+
+    return EvaluateRoundResponse(
+        round_index=round_row.round_index,
+        prompt_id=round_row.prompt_id,
+        is_audio_intelligible=round_row.is_audio_intelligible,
+        score=round_row.score,
+        relevance_score=round_row.relevance_score,
+        directness_score=round_row.directness_score,
+        conciseness_score=round_row.conciseness_score,
+        transcript=evaluation.get("transcript", ""),
+        feedback=evaluation.get("feedback", ""),
+        strengths=evaluation.get("strengths", []),
+        improvement_areas=evaluation.get("improvement_areas", []),
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/finalize",
+    response_model=FinalizeSessionResponse,
+)
+async def finalize_session_endpoint(
+    session_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> FinalizeSessionResponse:
+    try:
+        session_row, metrics_row = await finalize_precision_session(
+            db=db, user=user, session_id=session_id
+        )
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de precisión no encontrada",
+        )
+    except SessionNotActiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+
+    return FinalizeSessionResponse(
+        session_id=session_row.id,
+        status=session_row.status,
+        score=session_row.score,
+        rounds_completed=metrics_row.rounds_completed,
+        rounds_total=metrics_row.rounds_total,
+        relevance_score=metrics_row.relevance_score,
+        directness_score=metrics_row.directness_score,
+        conciseness_score=metrics_row.conciseness_score,
+    )
+
+
+@router.patch(
+    "/sessions/{session_id}/abandon",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+async def abandon_session_endpoint(
+    session_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    try:
+        await abandon_precision_session(db=db, user=user, session_id=session_id)
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de precisión no encontrada",
+        )
+    except SessionNotActiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        )
+
+
+@router.get("/sessions", response_model=list[PrecisionSessionListItem])
+async def list_sessions_endpoint(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[PrecisionSessionListItem]:
+    rows = await list_precision_sessions(db=db, user=user)
+    return [
+        PrecisionSessionListItem(
+            id=session_row.id,
+            started_at=session_row.started_at,
+            ended_at=session_row.ended_at,
+            duration_ms=session_row.duration_ms,
+            score=session_row.score,
+            status=session_row.status,
+            rounds_total=metrics_row.rounds_total,
+            rounds_completed=metrics_row.rounds_completed,
+        )
+        for session_row, metrics_row in rows
     ]
+
+
+@router.get("/sessions/{session_id}", response_model=PrecisionSessionDetail)
+async def get_session_endpoint(
+    session_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> PrecisionSessionDetail:
+    found = await get_precision_session(db=db, user=user, session_id=session_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de precisión no encontrada",
+        )
+    return _build_detail(*found)
