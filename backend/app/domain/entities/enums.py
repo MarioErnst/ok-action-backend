@@ -11,6 +11,7 @@ class ModuleEnum(str, enum.Enum):
     precision = "precision"
     linguistic_versatility = "linguistic_versatility"
     facial_expression = "facial_expression"
+    body_expression = "body_expression"
     fluency = "fluency"
     consistency = "consistency"
     live = "live"
@@ -42,6 +43,12 @@ class TopEmotionEnum(str, enum.Enum):
     fearful = "fearful"
     disgusted = "disgusted"
     neutral = "neutral"
+
+
+class BodyFramingModeEnum(str, enum.Enum):
+    upper_body = "upper_body"
+    full_body = "full_body"
+    mixed = "mixed"
 
 
 class PrecisionModeEnum(str, enum.Enum):

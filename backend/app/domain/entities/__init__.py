@@ -16,6 +16,7 @@ from app.domain.entities.precision_round import PrecisionRound
 from app.domain.entities.linguistic_versatility_metrics import LinguisticVersatilityMetrics
 from app.domain.entities.linguistic_versatility_round import LinguisticVersatilityRound
 from app.domain.entities.facial_expression_metrics import FacialExpressionMetrics
+from app.domain.entities.body_expression_metrics import BodyExpressionMetrics
 from app.domain.entities.fluency_metrics import FluencyMetrics
 from app.domain.entities.consistency_metrics import ConsistencyMetrics
 from app.domain.entities.live_metrics import LiveMetrics
@@ -39,6 +40,7 @@ __all__ = [
     "LinguisticVersatilityMetrics",
     "LinguisticVersatilityRound",
     "FacialExpressionMetrics",
+    "BodyExpressionMetrics",
     "FluencyMetrics",
     "ConsistencyMetrics",
     "LiveMetrics",

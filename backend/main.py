@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.infrastructure.db.session import check_db_connection, dispose_connector
 from app.presentation.routers.accentuation import router as accentuation_router
 from app.presentation.routers.auth import router as auth_router
+from app.presentation.routers.body_expression import router as body_expression_router
 from app.presentation.routers.consistency import router as consistency_router
 from app.presentation.routers.facial_expression import router as facial_expression_router
 from app.presentation.routers.fluency import router as fluency_router
@@ -49,6 +50,7 @@ app.include_router(accentuation_router)
 app.include_router(pronunciation_router)
 app.include_router(muletillas_router)
 app.include_router(facial_expression_router)
+app.include_router(body_expression_router)
 app.include_router(precision_router)
 app.include_router(linguistic_versatility_router)
 app.include_router(fluency_router)
