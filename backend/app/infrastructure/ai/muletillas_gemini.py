@@ -34,7 +34,7 @@ CRITERIOS DE EVALUACION:
 - overall_score (0-100): Calidad general de comunicacion
 - fluency_score (0-100): Fluidez del discurso, pausas naturales vs rellenas
 - muletillas_score (0-100): Claridad libre de muletillas (100 = ninguna muletilla)
-- Severidad por muletilla: "alta" si aparece 3 o mas veces, "media" si 2 veces, "baja" si 1 vez
+- Severidad por muletilla: "high" si aparece 3 o mas veces, "medium" si 2 veces, "low" si 1 vez
 - muletillas_per_minute: estima duracion del audio y calcula frecuencia
 
 Devuelve un JSON con la siguiente estructura exacta:
@@ -48,7 +48,7 @@ Devuelve un JSON con la siguiente estructura exacta:
     {{
       "word": "<muletilla detectada>",
       "count": <entero>,
-      "severity": "<alta|media|baja>",
+      "severity": "<low|medium|high>",
       "suggestion": "<sugerencia concreta y accionable en espanol>"
     }}
   ],
@@ -62,9 +62,9 @@ Solo devuelve el JSON, sin texto adicional."""
 MULETILLAS_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "overall_score": {"type": "number"},
-        "fluency_score": {"type": "number"},
-        "muletillas_score": {"type": "number"},
+        "overall_score": {"type": "integer"},
+        "fluency_score": {"type": "integer"},
+        "muletillas_score": {"type": "integer"},
         "total_muletillas_count": {"type": "integer"},
         "muletillas_per_minute": {"type": "number"},
         "muletillas_detected": {

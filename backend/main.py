@@ -6,12 +6,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.infrastructure.db.session import check_db_connection, dispose_connector
 from app.presentation.routers.accentuation import router as accentuation_router
 from app.presentation.routers.auth import router as auth_router
+from app.presentation.routers.body_expression import router as body_expression_router
+from app.presentation.routers.consistency import router as consistency_router
+from app.presentation.routers.facial_expression import router as facial_expression_router
+from app.presentation.routers.fluency import router as fluency_router
+from app.presentation.routers.linguistic_versatility import (
+    router as linguistic_versatility_router,
+)
+from app.presentation.routers.live import router as live_router
 from app.presentation.routers.loudness import router as loudness_router
-from app.presentation.routers.phonation import router as phonation_router
-from app.presentation.routers.pronunciation import router as pronunciation_router
-from app.presentation.routers.live_session import router as live_session_router
 from app.presentation.routers.muletillas import router as muletillas_router
+from app.presentation.routers.pauses import router as pauses_router
+from app.presentation.routers.phonation import router as phonation_router
 from app.presentation.routers.precision import router as precision_router
+from app.presentation.routers.pronunciation import router as pronunciation_router
+from app.presentation.routers.profile import router as profile_router
+from app.presentation.routers.video_router import router as video_router
 from config import settings
 
 
@@ -34,14 +44,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth_router)
-app.include_router(phonation_router)
-app.include_router(loudness_router)
-app.include_router(accentuation_router)
-app.include_router(pronunciation_router)
-app.include_router(muletillas_router)
-app.include_router(precision_router)
-app.include_router(live_session_router)
+app.include_router(auth_router, prefix="/api")
+app.include_router(phonation_router, prefix="/api")
+app.include_router(loudness_router, prefix="/api")
+app.include_router(pauses_router, prefix="/api")
+app.include_router(accentuation_router, prefix="/api")
+app.include_router(pronunciation_router, prefix="/api")
+app.include_router(muletillas_router, prefix="/api")
+app.include_router(facial_expression_router, prefix="/api")
+app.include_router(body_expression_router, prefix="/api")
+app.include_router(precision_router, prefix="/api")
+app.include_router(linguistic_versatility_router, prefix="/api")
+app.include_router(fluency_router, prefix="/api")
+app.include_router(consistency_router, prefix="/api")
+app.include_router(video_router, prefix="/api")
+app.include_router(profile_router, prefix="/api")
+
+app.include_router(live_router, prefix="/api")
 
 
 @app.get("/health")

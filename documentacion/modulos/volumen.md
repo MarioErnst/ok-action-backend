@@ -2,182 +2,133 @@
 
 ## 1. Descripción funcional
 
-El módulo de Volumen (Loudness Coach) permite a los usuarios monitorear y mejorar la intensidad acústica de su voz durante sesiones de entrenamiento. El usuario selecciona o crea un preset de contexto que define umbrales de decibeles para diferentes bandas acústicas según el escenario (conferencia, clase, conversación normal, etc.).
+El módulo de Volumen permite al usuario monitorear y mejorar la intensidad acústica de su voz. Se basa en dos conceptos: **presets** (perfiles de calibración del micrófono que definen umbrales de dB para cada escenario) y **sesiones** (la grabación de un entrenamiento contra un preset, con la distribución del tiempo en cada banda acústica).
 
-El análisis acústico en tiempo real se realiza en el frontend mediante Web Audio API. El backend gestiona dos aspectos principales:
+El análisis en tiempo real se hace en el frontend con Web Audio API. El backend tiene dos responsabilidades:
 
-1. **Gestión de presets**: define los umbrales acústicos de cada contexto. Incluye presets del sistema (no editables, visibles para todos los usuarios) y presets personalizados del usuario (editables, privados).
-2. **Persistencia de sesiones**: almacena las sesiones completadas con sus métricas agrupadas por banda acústica, permitiendo análisis histórico del desempeño.
+1. **Presets**: lista, crea, edita y borra perfiles. Hay presets globales del sistema (visibles para todos, no editables) y presets personales del usuario.
+2. **Sesiones**: persiste sesiones completadas y devuelve el histórico standalone.
 
 ## 2. Capas del módulo
 
 | Capa | Ubicación | Responsabilidad |
 |------|-----------|-----------------|
-| **Presentación (Router)** | `backend/app/presentation/routers/loudness.py` | Define los endpoints HTTP, valida requests, mapea respuestas. |
-| **Esquemas** | `backend/app/presentation/schemas/loudness.py` | Define estructuras de datos para solicitudes y respuestas. |
-| **Casos de uso** | `backend/app/use_cases/loudness/` | Orquesta la lógica de negocio (presets.py, sessions.py). |
-| **Entidades** | `backend/app/domain/entities/` | Modelos de dominio: `loudness_preset.py`, `loudness_session.py`. |
+| Router | `backend/app/presentation/routers/loudness.py` | Endpoints HTTP, mapeo de errores, traducción a esquemas. |
+| Schemas | `backend/app/presentation/schemas/loudness.py` | Contratos Pydantic v2 con validación de rangos y suma de bandas. |
+| Use cases | `backend/app/use_cases/loudness/presets.py`, `sessions.py` | Lógica de presets (CRUD) y sesiones (transacción multi-tabla). |
+| Entidades | `backend/app/domain/entities/loudness_preset.py`, `loudness_metrics.py`, `session.py` | Modelo SQLAlchemy del esquema uniforme. |
 
 ## 3. Modelo de datos
 
-### Tabla: `loudness_presets`
+### `loudness_presets`
 
-Almacena los presets de contexto acústico, tanto del sistema como personalizados del usuario.
+Perfiles de calibración del micrófono. `user_id IS NULL` denota un preset global.
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único del preset. |
-| `user_id` | UUID | FK → users (CASCADE) \| NULL | Propietario. NULL indica preset del sistema (no editable). |
-| `label` | VARCHAR(100) | NOT NULL | Nombre del preset (ej: "Conferencia", "Clase Online"). |
-| `description` | TEXT | nullable | Descripción opcional del contexto. |
-| `silence_offset_db` | NUMERIC(6,2) | NOT NULL | Umbral de silencio en dB (relativo al noise floor). |
-| `too_low_offset_db` | NUMERIC(6,2) | NOT NULL | Umbral inferior de volumen demasiado bajo. |
-| `optimal_offset_db` | NUMERIC(6,2) | NOT NULL | Centro del rango óptimo de volumen. |
-| `clip_threshold_dbfs` | NUMERIC(6,2) | NOT NULL | Umbral de clipping (saturación) en dBFS. |
-| `is_default` | BOOLEAN | NOT NULL | Si es el preset seleccionado por defecto para el usuario. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Timestamp de creación. |
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `id` | UUID | PK | — |
+| `user_id` | UUID | NULL FK `users.id` ON DELETE CASCADE | NULL = preset global del sistema. |
+| `label` | VARCHAR(100) | NOT NULL | Nombre visible del preset. |
+| `description` | TEXT | NULL | Descripción opcional. |
+| `silence_offset_db` | NUMERIC(6,2) | NOT NULL | Offset de silencio sobre el ruido base. |
+| `low_offset_db` | NUMERIC(6,2) | NOT NULL | Umbral inferior de la banda baja. |
+| `optimal_offset_db` | NUMERIC(6,2) | NOT NULL | Umbral para considerar la banda como óptima. |
+| `clip_threshold_db` | NUMERIC(6,2) | NOT NULL | Umbral de clipping (saturación). |
+| `is_default` | BOOLEAN | NOT NULL DEFAULT FALSE | Marca presets seed-time prioritarios para la UI. |
+| `created_at` | TIMESTAMPTZ | NOT NULL | — |
 
-### Tabla: `loudness_sessions`
+Los 3 presets globales (`Conversación`, `Presentación grupal`, `Auditorio grande`) los inserta el seed con `user_id NULL` e `is_default=TRUE`.
 
-Registra las sesiones de entrenamiento completadas con métricas acústicas agregadas.
+### `sessions` (raíz, compartida)
 
-| Campo | Tipo | Restricciones | Descripción |
-|-------|------|---------------|-------------|
-| `id` | UUID | PK | Identificador único de la sesión. |
-| `user_id` | UUID | FK → users (CASCADE) | Usuario propietario. |
-| `preset_id` | UUID | FK → loudness_presets (SET NULL) | Preset utilizado. Se pone NULL si el preset se elimina. |
-| `duration_ms` | INTEGER | NOT NULL | Duración total de la sesión en milisegundos. |
-| `optimal_percent` | NUMERIC(5,2) | NOT NULL | Porcentaje de tiempo dentro de banda óptima (0-100). |
-| `peak_db` | NUMERIC(8,2) | NOT NULL | Pico máximo de volumen detectado en dB. |
-| `band_time_ms` | JSONB | NOT NULL | Tiempo en ms por banda: `{silence, too-low, optimal, too-high, clipping}`. |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Timestamp de creación. |
+Una fila por sesión. Para loudness standalone: `module='loudness'`, `parent_id=NULL`. Cuando se reescriba el módulo `live`, las sesiones nested usarán `parent_id=<live_id>`.
 
-### Migración
+Columnas relevantes:
 
-Las tablas se crean en `0c400000111e_initial_schema.py`, junto con el esquema inicial de fonación.
+- `id`, `user_id`, `module='loudness'`, `parent_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`.
+- `score` aquí es **derivado por backend = `optimal_pct`** (ver decisiones de diseño).
 
-## 4. Esquemas de solicitud y respuesta
+### `loudness_metrics` (1:1 con `sessions`)
 
-### `LoudnessPresetResponse`
+Métricas agregadas de la sesión.
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `id` | UUID | Identificador del preset. |
-| `label` | str | Nombre del preset. |
-| `description` | str \| None | Descripción opcional. |
-| `silence_offset_db` | float | Umbral de silencio. |
-| `too_low_offset_db` | float | Umbral de volumen bajo. |
-| `optimal_offset_db` | float | Umbral de volumen óptimo. |
-| `clip_threshold_dbfs` | float | Umbral de clipping. |
-| `is_default` | bool | Si es el preset por defecto. |
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK / FK `sessions.id` ON DELETE CASCADE | Vínculo 1:1. |
+| `preset_id` | UUID | NOT NULL FK `loudness_presets.id` ON DELETE RESTRICT | El preset usado en esa sesión. RESTRICT impide borrar presets referenciados. |
+| `optimal_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % del tiempo en banda óptima. |
+| `low_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % del tiempo en banda baja. |
+| `high_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % del tiempo en banda alta. |
+| `clipping_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % del tiempo en clipping. |
+| `peak_db` | NUMERIC(8,2) | NOT NULL | dB pico de la sesión. |
 
-### `LoudnessPresetCreateRequest`
+CHECK adicional: `optimal_pct + low_pct + high_pct + clipping_pct = 100`.
 
-Igual a `LoudnessPresetResponse` sin `id` ni `is_default`. El campo `description` es opcional.
+### Decisiones de diseño
 
-### `LoudnessPresetUpdateRequest`
+- **`band_time_ms JSONB` reemplazado por 4 columnas `_pct`**: el JSONB del esquema viejo no era queryable longitudinalmente. Cuatro SMALLINT con CHECK de suma=100 capturan la misma información de forma estructurada.
+- **`score` se deriva en backend = `metrics.optimal_pct`**. Diferencia explícita con phonation: ahí el score es una fórmula compuesta multi-ejercicio que vive en frontend; aquí el score es literalmente el `optimal_pct`. Derivar en backend evita que cliente mande dos valores que pueden quedar desincronizados (mismo principio que `duration_ms`). **Convención general**: si la fórmula del score es trivial y única, derívalo en backend; si es compuesta y subjetiva, recíbelo del cliente.
+- **`too_low_offset_db` → `low_offset_db`** y **`clip_threshold_dbfs` → `clip_threshold_db`**: nombres alineados con el resto del schema (sufijo `_db` consistente, sin abreviaciones tipo "dbfs").
+- **Presets globales no editables**: `update_preset` y `delete_preset` filtran por `user_id == user.id`, así que los globales (`user_id IS NULL`) nunca matchean y devuelven None → router retorna 404.
+- **FK RESTRICT** en `loudness_metrics.preset_id`: borrar un preset referenciado por sesiones provoca `IntegrityError` que el use_case captura como `PresetReferencedError` → router retorna 409.
+- **Validación de preset en sesión**: `create_loudness_session` carga el preset y verifica que sea global o del usuario antes de insertar la fila. Si no, lanza `PresetNotAvailableError` → 422 (es un payload inválido, no autorización sobre un recurso hermano).
+- **Endpoint nuevo `GET /loudness/sessions/{id}`**: el módulo viejo no tenía detalle de sesión, solo lista. El nuevo lo añade para consistencia con phonation y para que la UI pueda mostrar la página de detalle de una sesión histórica.
 
-Todos los campos de `LoudnessPresetCreateRequest` son opcionales. Solo se actualizan los campos presentes en la solicitud.
+## 4. Esquemas
 
-### `LoudnessSessionRequest`
+### Presets
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `preset_id` | UUID | Preset utilizado en la sesión. |
-| `duration_ms` | int | Duración en milisegundos. |
-| `optimal_percent` | float | Porcentaje de tiempo en rango óptimo. |
-| `peak_db` | float | Pico máximo de volumen. |
-| `band_time_ms` | dict | Tiempo en ms por banda acústica. |
+`LoudnessPresetCreate`: `label` (1-100 chars), `description?`, `silence_offset_db`, `low_offset_db`, `optimal_offset_db`, `clip_threshold_db`.
 
-### `LoudnessSessionResponse`
+`LoudnessPresetUpdate`: todos los anteriores opcionales (PATCH semántico vía `model_dump(exclude_unset=True)`).
 
-Igual al request más `id` y `created_at`.
+`LoudnessPresetOutput`: campos del preset + `is_default` (de seed) + `is_global` (`user_id IS NULL`). El frontend usa `is_global` para deshabilitar botones de edit/delete.
 
-### `LoudnessSessionListItem`
+### Sesiones
 
-Respuesta compacta: `id`, `preset_id`, `optimal_percent`, `duration_ms`, `created_at`.
+`LoudnessMetricsInput`: `preset_id`, `optimal_pct`, `low_pct`, `high_pct`, `clipping_pct` (cada uno 0-100), `peak_db`. Validador: las 4 bandas deben sumar 100.
+
+`LoudnessSessionCreate`: `started_at`, `ended_at`, `metrics`. Validador: `ended_at > started_at`. **No incluye `score`**: el backend lo deriva.
+
+`LoudnessSessionDetail`: `id`, `user_id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `created_at`, `metrics`.
+
+`LoudnessSessionListItem`: compacto para timeline → `id`, `started_at`, `ended_at`, `duration_ms`, `score`, `status`, `optimal_pct`, `preset_id`. Incluye `optimal_pct` y `preset_id` para que la card de timeline pueda renderizar sin pegarle al detalle.
 
 ## 5. Casos de uso
 
-### `list_presets(user, session)`
+### Presets — `presets.py`
 
-Retorna presets con `user_id IS NULL` (presets del sistema) más los presets del usuario actual, ordenados por `is_default DESC`, `label ASC`.
+- `list_presets(db, user)`: globales + del usuario, ordenados por `is_default DESC, label`.
+- `create_preset(db, user, payload)`: crea preset personal con `user_id=user.id`, `is_default=False`.
+- `update_preset(db, user, preset_id, payload)`: PATCH de campos provistos. Filtro por `user_id` evita tocar globales y presets de otros.
+- `delete_preset(db, user, preset_id)`: elimina preset propio. Si la FK RESTRICT lo bloquea, lanza `PresetReferencedError`.
 
-### `create_preset(data, user, session)`
+### Sesiones — `sessions.py`
 
-Crea un `LoudnessPreset` con `is_default=False` y el `user_id` del usuario actual.
+- `_resolve_preset(db, user, preset_id)`: helper privado. Valida que el preset sea global o del usuario; lanza `PresetNotAvailableError` si no. Permite que `create_loudness_session` falle temprano antes de tocar `sessions`/`loudness_metrics`.
+- `create_loudness_session(db, user, payload)`: en una transacción, valida el preset, calcula `duration_ms` y `score=optimal_pct`, inserta `sessions` (`module='loudness'`, `status='completed'`, `parent_id=NULL`) y `loudness_metrics`.
+- `list_loudness_sessions(db, user)`: JOIN sessions + metrics, filtra `module='loudness'` y `parent_id IS NULL`, ordena por `started_at DESC`. El filtro por `parent_id` excluye sesiones que sean parte de un live.
+- `get_loudness_session(db, user, session_id)`: detalle. Retorna `None` para no-encontrado o cross-user (router → 404 sin distinguir, no se filtra existencia).
 
-### `update_preset(preset_id, data, user, session)`
+## 6. Endpoints
 
-Verifica que el preset pertenezca al usuario (los presets del sistema, `user_id IS NULL`, no son editables). Actualiza solo los campos no-None del request. Hace commit.
+### Presets
 
-**Errores:** 403 Forbidden si el preset es del sistema o pertenece a otro usuario.
+- `GET /loudness/presets` → 200, `list[LoudnessPresetOutput]`. Globales + del usuario.
+- `POST /loudness/presets` → 201, `LoudnessPresetOutput`. Crea preset personal.
+- `PUT /loudness/presets/{id}` → 200 / 404. PATCH semántico.
+- `DELETE /loudness/presets/{id}` → 204 / 404 / 409. 409 si está referenciado por sesiones.
 
-### `delete_preset(preset_id, user, session)`
+### Sesiones
 
-Verifica propiedad, elimina el registro y hace commit. Las sesiones asociadas recibirán `preset_id = NULL` por la política `SET NULL` de la clave foránea.
+- `POST /loudness/sessions` → 201 / 422 (payload inválido o preset no disponible).
+- `GET /loudness/sessions` → 200, lista standalone, ordenada por `started_at DESC`.
+- `GET /loudness/sessions/{id}` → 200 / 404 (no existe o pertenece a otro usuario).
 
-**Errores:** 403 Forbidden si el preset es del sistema o pertenece a otro usuario.
+Todos los endpoints requieren Bearer JWT.
 
-### `save_loudness_session(data, user, session)`
+## 7. Pendientes en el roadmap
 
-Crea un `LoudnessSession` con los datos del request y el `user_id` del usuario actual.
-
-### `list_loudness_sessions(user, session)`
-
-Consulta las sesiones del usuario ordenadas por `created_at` descendente.
-
-## 7. Endpoints de la API
-
-### GET `/loudness/presets`
-
-Obtiene todos los presets accesibles (sistema + propios del usuario).
-
-- **Autenticación:** Bearer token requerido
-- **Respuesta (200 OK):** `list[LoudnessPresetResponse]`
-
----
-
-### POST `/loudness/presets`
-
-Crea un nuevo preset personalizado.
-
-- **Método:** POST — **Código:** 201 Created
-- **Body:** `LoudnessPresetCreateRequest`
-- **Respuesta:** `LoudnessPresetResponse`
-
----
-
-### PUT `/loudness/presets/{preset_id}`
-
-Actualiza un preset personalizado existente.
-
-- **Respuesta (200 OK):** `LoudnessPresetResponse`
-- **Errores:** `403` — preset del sistema o no pertenece al usuario. `404` — no existe.
-
----
-
-### DELETE `/loudness/presets/{preset_id}`
-
-Elimina un preset personalizado.
-
-- **Respuesta:** 204 No Content (sin body)
-- **Errores:** `403` — preset del sistema o no pertenece al usuario.
-
----
-
-### POST `/loudness/sessions`
-
-Guarda una sesión de entrenamiento completada.
-
-- **Código:** 201 Created
-- **Body:** `LoudnessSessionRequest`
-- **Respuesta:** `LoudnessSessionResponse`
-
----
-
-### GET `/loudness/sessions`
-
-Lista todas las sesiones del usuario autenticado en orden descendente.
-
-- **Respuesta (200 OK):** `list[LoudnessSessionListItem]`
+- **Composición en sesión live**: cuando se reescriba `live`, `create_loudness_session` debe aceptar `parent_id` opcional para encadenar la fila a una sesión live padre. El score y métricas se siguen calculando igual.
+- **Sesiones abortadas**: hoy solo se persiste `status='completed'`. Aborted queda para el lifecycle del módulo `live`.
+- **Validar combinaciones de offsets en presets**: hoy se aceptan tres `_offset_db` y un `_threshold_db` sin verificar que sean coherentes entre sí (p.ej. `low < optimal < clip`). Si surge un bug por presets mal configurados, agregar un `model_validator` en `LoudnessPresetCreate`/`Update`.

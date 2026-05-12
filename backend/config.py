@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # Gemini AI
     gemini_api_key: str
 
+    # Backblaze B2 (S3-compatible storage)
+    s3_bucket: str = "ok-actionbucket"
+    s3_endpoint_url: str = "https://s3.us-east-005.backblazeb2.com"
+    aws_region: str = "us-east-005"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+
     # Dev user
     dev_user_email: str = ""
     dev_user_password: str = ""

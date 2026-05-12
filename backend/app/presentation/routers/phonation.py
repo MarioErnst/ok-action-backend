@@ -1,91 +1,106 @@
-# Full module documentation: documentacion/modulos/fonacion.md
-from fastapi import APIRouter, Depends, HTTPException
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.entities.phonation_metrics import PhonationMetrics
+from app.domain.entities.phonation_session_exercise import PhonationSessionExercise
+from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.phonation import (
+    PhonationExerciseOutput,
+    PhonationMetricsOutput,
+    PhonationSessionCreate,
+    PhonationSessionDetail,
     PhonationSessionListItem,
-    PhonationSessionRequest,
-    PhonationSessionResponse,
-    ExerciseResultResponse,
 )
+from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.phonation.sessions import (
+    create_phonation_session,
     get_phonation_session,
     list_phonation_sessions,
-    save_phonation_session,
 )
 
 router = APIRouter(prefix="/phonation", tags=["phonation"])
 
 
-def _build_session_response(result) -> PhonationSessionResponse:
-    # Centralises entity-to-schema mapping so create_session and
-    # get_session_detail do not duplicate the same transformation.
-    return PhonationSessionResponse(
-        id=str(result.id),
-        overall_score=float(result.overall_score),
-        avg_hz=float(result.avg_hz),
-        observations=result.observations,
-        created_at=result.created_at.isoformat(),
+def _build_detail(
+    session_row: Session,
+    metrics_row: PhonationMetrics,
+    exercise_rows: list[PhonationSessionExercise],
+) -> PhonationSessionDetail:
+    return PhonationSessionDetail(
+        id=session_row.id,
+        user_id=session_row.user_id,
+        started_at=session_row.started_at,
+        ended_at=session_row.ended_at,
+        duration_ms=session_row.duration_ms,
+        score=session_row.score,
+        status=session_row.status,
+        created_at=session_row.created_at,
+        metrics=PhonationMetricsOutput.model_validate(metrics_row),
         exercises=[
-            ExerciseResultResponse(
-                id=str(e.id),
-                exercise_id=e.exercise_id,
-                exercise_type=e.exercise_type,
-                avg_hz=float(e.avg_hz),
-                stability=float(e.stability),
-                breaks=e.breaks,
-                in_range=e.in_range,
-            )
-            for e in result.exercise_results
+            PhonationExerciseOutput.model_validate(exercise)
+            for exercise in exercise_rows
         ],
     )
 
 
-@router.post("/sessions", response_model=PhonationSessionResponse, status_code=201)
+@router.post(
+    "/sessions",
+    response_model=PhonationSessionDetail,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_session(
-    request: PhonationSessionRequest,
+    payload: PhonationSessionCreate,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    phonation_session = await save_phonation_session(
-        data=request.model_dump(),
-        user=user,
-        session=session,
-    )
-
-    result = await get_phonation_session(str(phonation_session.id), user, session)
-
-    return _build_session_response(result)
+    db: AsyncSession = Depends(get_session),
+) -> PhonationSessionDetail:
+    try:
+        session_row, metrics_row, exercise_rows = await create_phonation_session(
+            db=db, user=user, payload=payload
+        )
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    return _build_detail(session_row, metrics_row, exercise_rows)
 
 
 @router.get("/sessions", response_model=list[PhonationSessionListItem])
 async def list_sessions(
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    sessions = await list_phonation_sessions(user, session)
+    db: AsyncSession = Depends(get_session),
+) -> list[PhonationSessionListItem]:
+    rows = await list_phonation_sessions(db=db, user=user)
     return [
         PhonationSessionListItem(
-            id=str(s.id),
-            overall_score=float(s.overall_score),
-            avg_hz=float(s.avg_hz),
-            created_at=s.created_at.isoformat(),
+            id=session_row.id,
+            started_at=session_row.started_at,
+            ended_at=session_row.ended_at,
+            duration_ms=session_row.duration_ms,
+            score=session_row.score,
+            status=session_row.status,
+            avg_hz=float(metrics_row.avg_hz),
         )
-        for s in sessions
+        for session_row, metrics_row in rows
     ]
 
 
-@router.get("/sessions/{session_id}", response_model=PhonationSessionResponse)
+@router.get("/sessions/{session_id}", response_model=PhonationSessionDetail)
 async def get_session_detail(
-    session_id: str,
+    session_id: UUID,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    result = await get_phonation_session(session_id, user, session)
-    if not result:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-
-    return _build_session_response(result)
+    db: AsyncSession = Depends(get_session),
+) -> PhonationSessionDetail:
+    found = await get_phonation_session(db=db, user=user, session_id=session_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de fonación no encontrada",
+        )
+    return _build_detail(*found)
