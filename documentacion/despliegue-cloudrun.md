@@ -46,6 +46,11 @@ El contenedor no incluye ningún valor sensible. Todas las variables deben confi
 | `JWT_EXPIRE_MINUTES` | Tiempo de expiración del token en minutos |
 | `CORS_ORIGINS` | Lista JSON de orígenes permitidos |
 | `GEMINI_API_KEY` | Clave de la API de Gemini |
+| `S3_BUCKET` | Nombre del bucket Backblaze B2 (por defecto `ok-actionbucket`). |
+| `S3_ENDPOINT_URL` | Endpoint S3 de Backblaze (por defecto `https://s3.us-east-005.backblazeb2.com`). |
+| `AWS_REGION` | Región del bucket (por defecto `us-east-005`). Se mantiene el prefijo `AWS_*` por convención boto3. |
+| `AWS_ACCESS_KEY_ID` | `keyID` del Application Key generado en la consola de Backblaze. |
+| `AWS_SECRET_ACCESS_KEY` | `applicationKey` del Application Key. Solo visible una vez al crear la key. |
 
 ## Credenciales de GCP (Cloud SQL Connector)
 
