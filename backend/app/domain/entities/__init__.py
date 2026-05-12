@@ -20,6 +20,7 @@ from app.domain.entities.body_expression_metrics import BodyExpressionMetrics
 from app.domain.entities.fluency_metrics import FluencyMetrics
 from app.domain.entities.consistency_metrics import ConsistencyMetrics
 from app.domain.entities.live_metrics import LiveMetrics
+from app.domain.entities.video import Video
 
 __all__ = [
     "Role",
@@ -44,4 +45,5 @@ __all__ = [
     "FluencyMetrics",
     "ConsistencyMetrics",
     "LiveMetrics",
+    "Video",
 ]
