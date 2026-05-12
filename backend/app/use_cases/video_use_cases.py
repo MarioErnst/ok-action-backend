@@ -2,14 +2,16 @@ import uuid
 from fastapi import UploadFile
 from typing import List
 from app.domain.entities.video import Video
-from app.infrastructure.backblaze_setup import get_s3_client, get_presigned_url, S3_BUCKET
+from app.infrastructure.backblaze_setup import get_s3_client, get_presigned_url
+from config import settings
+
 
 def list_videos() -> List[Video]:
     s3_client = get_s3_client()
     videos = []
     try:
         # List objects in the bucket (no prefix so it finds them if they are in the root)
-        response = s3_client.list_objects_v2(Bucket=S3_BUCKET)
+        response = s3_client.list_objects_v2(Bucket=settings.s3_bucket)
         if 'Contents' in response:
             for obj in response['Contents']:
                 s3_key = obj['Key']
@@ -49,7 +51,7 @@ async def upload_video(file: UploadFile, title: str) -> Video:
     # Upload to S3 without 'public-read' ACL (keeps it private)
     s3_client = get_s3_client()
     s3_client.put_object(
-        Bucket=S3_BUCKET,
+        Bucket=settings.s3_bucket,
         Key=s3_key,
         Body=content,
         ContentType=file.content_type
@@ -68,13 +70,13 @@ def delete_video(video_id: str) -> bool:
     s3_client = get_s3_client()
     try:
         # Search the entire bucket to find the file that matches this ID
-        response = s3_client.list_objects_v2(Bucket=S3_BUCKET)
+        response = s3_client.list_objects_v2(Bucket=settings.s3_bucket)
         if 'Contents' in response:
             for obj in response['Contents']:
                 # The object key could be "videos/123_video.mp4" or just "123_video.mp4"
                 filename = obj['Key'].split("/")[-1]
                 if filename.startswith(f"{video_id}_") or filename == video_id:
-                    s3_client.delete_object(Bucket=S3_BUCKET, Key=obj['Key'])
+                    s3_client.delete_object(Bucket=settings.s3_bucket, Key=obj['Key'])
                     return True
         return False
     except Exception as e:
