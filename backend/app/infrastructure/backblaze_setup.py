@@ -1,6 +1,10 @@
+import logging
+
 import boto3
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def get_s3_client():
@@ -34,6 +38,6 @@ def get_presigned_url(s3_key: str, expiration: int = 3600) -> str:
             Params={"Bucket": settings.s3_bucket, "Key": s3_key},
             ExpiresIn=expiration,
         )
-    except Exception as e:
-        print(f"Error generating presigned URL: {e}")
+    except Exception:
+        logger.exception("Failed to generate presigned URL for key %s", s3_key)
         return ""
