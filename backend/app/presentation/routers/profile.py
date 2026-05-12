@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from typing import List, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -8,8 +8,24 @@ from app.infrastructure.security.dependencies import get_current_user
 from app.domain.entities.user import User
 from app.domain.entities.session import Session
 from app.domain.entities.enums import ModuleEnum
+from app.presentation.schemas.profile import TimeRange, TimelineResponse
+from app.use_cases.profile.timeline import get_user_timeline
 
 router = APIRouter(prefix="/profile", tags=["Profile"])
+
+
+@router.get("/timeline", response_model=TimelineResponse)
+async def get_profile_timeline(
+    range: TimeRange = Query(default="30d", description="Window length: 7d, 30d, 90d or all."),
+    module: str = Query(
+        default="all",
+        description="ModuleEnum value to filter (e.g. 'phonation') or 'all' to aggregate every module.",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> TimelineResponse:
+    """Return per-day aggregates of the user's sessions for the dashboard charts."""
+    return await get_user_timeline(db, current_user.id, range_=range, module=module)
 
 @router.get("/history", response_model=List[Any])
 async def get_user_history(
