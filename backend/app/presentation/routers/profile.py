@@ -9,7 +9,7 @@ from app.domain.entities.user import User
 from app.domain.entities.session import Session
 from app.domain.entities.enums import ModuleEnum
 
-router = APIRouter(prefix="/api/profile", tags=["Profile"])
+router = APIRouter(prefix="/profile", tags=["Profile"])
 
 @router.get("/history", response_model=List[Any])
 async def get_user_history(

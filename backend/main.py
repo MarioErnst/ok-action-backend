@@ -58,7 +58,7 @@ app.include_router(linguistic_versatility_router, prefix="/api")
 app.include_router(fluency_router, prefix="/api")
 app.include_router(consistency_router, prefix="/api")
 app.include_router(video_router, prefix="/api")
-app.include_router(profile_router)
+app.include_router(profile_router, prefix="/api")
 
 app.include_router(live_router, prefix="/api")
 
