@@ -17,7 +17,7 @@ El módulo requiere las siguientes variables de entorno para funcionar:
 
 ### Generación de URLs Firmadas (Presigned URLs)
 Para evitar que el bucket sea público y prevenir el robo de ancho de banda o acceso no autorizado, los videos se entregan al Frontend mediante **URLs firmadas temporalmente**.
-La función `get_presigned_url(s3_key: str)` del archivo `app.infrastructure.s3_setup` genera un enlace seguro (válido típicamente por 1 hora) que permite descargar o reproducir el archivo directamente desde Backblaze.
+La función `get_presigned_url(s3_key: str)` del archivo `app.infrastructure.backblaze_setup` genera un enlace seguro (válido típicamente por 1 hora) que permite descargar o reproducir el archivo directamente desde Backblaze.
 
 ## Endpoints
 - **GET /videos**: Retorna la lista de todos los videos desde la Base de Datos. En lugar de devolver una ruta estática (ej. `/uploads/video.mp4`), el caso de uso se encarga de generar al vuelo una URL firmada de S3 para cada video.
