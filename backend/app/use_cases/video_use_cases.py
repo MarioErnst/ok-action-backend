@@ -1,9 +1,12 @@
+import logging
 import uuid
 from fastapi import UploadFile
 from typing import List
 from app.domain.entities.video import Video
 from app.infrastructure.backblaze_setup import get_s3_client, get_presigned_url
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def list_videos() -> List[Video]:
@@ -31,9 +34,9 @@ def list_videos() -> List[Video]:
                     url=url,
                     filename=filename
                 ))
-    except Exception as e:
-        print(f"Error listing videos from S3: {e}")
-        
+    except Exception:
+        logger.exception("Failed to list videos from S3 bucket %s", settings.s3_bucket)
+
     return videos
 
 async def upload_video(file: UploadFile, title: str) -> Video:
@@ -79,6 +82,6 @@ def delete_video(video_id: str) -> bool:
                     s3_client.delete_object(Bucket=settings.s3_bucket, Key=obj['Key'])
                     return True
         return False
-    except Exception as e:
-        print(f"Failed to delete video {video_id} from S3: {e}")
+    except Exception:
+        logger.exception("Failed to delete video %s from S3 bucket %s", video_id, settings.s3_bucket)
         return False
