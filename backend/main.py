@@ -19,15 +19,9 @@ from app.presentation.routers.muletillas import router as muletillas_router
 from app.presentation.routers.pauses import router as pauses_router
 from app.presentation.routers.phonation import router as phonation_router
 from app.presentation.routers.precision import router as precision_router
-from app.presentation.routers.facial_expression import router as facial_expression_router
-from fastapi.staticfiles import StaticFiles
-
-from app.presentation.routers.linguistic_versatility import (
-    router as linguistic_versatility_router,
-)
-from app.presentation.routers.video_router import router as video_router
 from app.presentation.routers.pronunciation import router as pronunciation_router
 from app.presentation.routers.profile import router as profile_router
+from app.presentation.routers.video_router import router as video_router
 from config import settings
 
 
