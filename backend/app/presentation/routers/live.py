@@ -25,6 +25,7 @@ from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.live import (
     AbandonSessionRequest,
     ComposedAudioEvaluationResponse,
+    FacialSummaryInput,
     FinalizeSessionResponse,
     LiveChildOutput,
     LiveMetricsOutput,
@@ -168,6 +169,7 @@ async def evaluate_audio_endpoint(
     modules: list[str] = Form(...),
     started_at: datetime = Form(...),
     prompt_text: str = Form(""),
+    facial_summary: str | None = Form(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ComposedAudioEvaluationResponse:
@@ -175,10 +177,15 @@ async def evaluate_audio_endpoint(
 
     The request is multipart so the client can send the recorded blob
     alongside the module list. modules is a repeated form field
-    (modules=muletillas&modules=consistency&...). started_at is the
+    (modules=muletillas&modules=facial_expression&...). started_at is the
     client-side timestamp from when MediaRecorder began; we trust it for
     the child sessions because the user could only lie about their own
     duration. ended_at is set server-side to now() for honesty.
+
+    facial_summary is an optional JSON-encoded payload containing the
+    seven emotion percentages computed in the browser. It is required
+    only when facial_expression is among the selected modules; otherwise
+    it is ignored.
     """
 
     if not modules:
@@ -192,6 +199,24 @@ async def evaluate_audio_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid module(s): {invalid}",
         )
+
+    composable_modules = cast(list[ComposableModule], modules)
+
+    facial_summary_payload: dict | None = None
+    if "facial_expression" in composable_modules:
+        if not facial_summary:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="facial_summary is required when facial_expression is selected",
+            )
+        try:
+            parsed = FacialSummaryInput.model_validate_json(facial_summary)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid facial_summary payload: {exc}",
+            )
+        facial_summary_payload = parsed.model_dump()
 
     try:
         await validate_parent_live_session(db, user, session_id)
@@ -209,7 +234,6 @@ async def evaluate_audio_endpoint(
         )
     mime_type = audio.content_type or "audio/webm"
 
-    composable_modules = cast(list[ComposableModule], modules)
     gemini_response = await evaluate_composed_audio(
         audio_bytes=audio_bytes,
         mime_type=mime_type,
@@ -234,6 +258,7 @@ async def evaluate_audio_endpoint(
         ended_at=ended_at,
         modules=composable_modules,
         gemini_response=gemini_response,
+        facial_summary=facial_summary_payload,
     )
 
     return ComposedAudioEvaluationResponse(
