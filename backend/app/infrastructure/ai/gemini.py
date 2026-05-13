@@ -52,12 +52,18 @@ Devuelve un JSON con la siguiente estructura exacta:
   "specific_errors": [
     {{
       "word": "<palabra con error>",
+      "word_index": <indice 0-based de la palabra dentro de la frase, contando solo tokens alfabeticos>,
+      "actual_stressed_syllable_index": <indice 0-based de la silaba que el hablante acentuo, o -1 si no es claro>,
       "expected_stress": "<descripcion del acento esperado>",
       "actual_issue": "<descripcion del problema detectado>",
       "suggestion": "<sugerencia concreta de mejora>"
     }}
   ]
 }}
+
+Reglas para los indices:
+- `word_index` cuenta solo palabras (saltea espacios y puntuacion). La primera palabra de la frase es 0.
+- `actual_stressed_syllable_index` cuenta silabas dentro de la palabra (0-based). Si el hablante no marco ninguna silaba claramente, usa -1.
 
 Las puntuaciones deben ser estrictas y honestas. Solo devuelve el JSON, sin texto adicional."""
 
@@ -76,11 +82,20 @@ GEMINI_RESPONSE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "word": {"type": "string"},
+                    "word_index": {"type": "integer"},
+                    "actual_stressed_syllable_index": {"type": "integer"},
                     "expected_stress": {"type": "string"},
                     "actual_issue": {"type": "string"},
                     "suggestion": {"type": "string"},
                 },
-                "required": ["word", "expected_stress", "actual_issue", "suggestion"],
+                "required": [
+                    "word",
+                    "word_index",
+                    "actual_stressed_syllable_index",
+                    "expected_stress",
+                    "actual_issue",
+                    "suggestion",
+                ],
             },
         },
     },
