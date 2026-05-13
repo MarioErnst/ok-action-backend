@@ -11,11 +11,23 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AbandonSessionRequest(BaseModel):
-    """Reason for cutting a live session short. The 'completed' value is
-    reserved for the finalize endpoint and rejected here so abandon and
-    finalize stay semantically distinct."""
+    """Reason for cutting a live session short via the abandon endpoint.
+    The 'completed' value is reserved for the finalize endpoint. The
+    'auto_stop_strikes' and 'auto_stop_emotion' values flow through
+    finalize (not abandon), because they include a regular score
+    computation; abandon stays for orphan cleanup and explicit user-
+    initiated cuts."""
 
     stop_reason: Literal["user_stop", "time_limit", "error"]
+
+
+class FinalizeSessionRequest(BaseModel):
+    """Optional body for the finalize endpoint. When auto_stop_reason is
+    present, the session is marked aborted with that reason instead of
+    completed. Omit the body (or pass auto_stop_reason=None) for the
+    standard natural-completion case."""
+
+    auto_stop_reason: Literal["auto_stop_strikes", "auto_stop_emotion"] | None = None
 
 
 class FacialSummaryInput(BaseModel):
@@ -59,9 +71,14 @@ class StartSessionResponse(BaseModel):
 
 class FinalizeSessionResponse(BaseModel):
     session_id: UUID
-    status: Literal["completed"]
+    status: Literal["completed", "aborted"]
     score: int | None
     children_count: int
+    stop_reason: Literal[
+        "completed",
+        "auto_stop_strikes",
+        "auto_stop_emotion",
+    ]
 
 
 class LiveChildOutput(BaseModel):
@@ -81,7 +98,14 @@ class LiveChildOutput(BaseModel):
 class LiveMetricsOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    stop_reason: Literal["user_stop", "time_limit", "error", "completed"]
+    stop_reason: Literal[
+        "user_stop",
+        "time_limit",
+        "error",
+        "completed",
+        "auto_stop_strikes",
+        "auto_stop_emotion",
+    ]
 
 
 class LiveSessionDetail(BaseModel):
@@ -105,7 +129,14 @@ class LiveSessionListItem(BaseModel):
     score: int | None
     status: Literal["active", "completed", "aborted"]
     children_count: int
-    stop_reason: Literal["user_stop", "time_limit", "error", "completed"] | None
+    stop_reason: Literal[
+        "user_stop",
+        "time_limit",
+        "error",
+        "completed",
+        "auto_stop_strikes",
+        "auto_stop_emotion",
+    ] | None
 
 
 class ComposedAudioEvaluationResponse(BaseModel):
