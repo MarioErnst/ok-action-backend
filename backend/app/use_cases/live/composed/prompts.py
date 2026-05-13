@@ -1,18 +1,18 @@
 """Composed Gemini prompt builder for live audio evaluation.
 
-The standalone prompts of the four composable modules (muletillas,
-accentuation, pronunciation, consistency) assume specific input shapes:
-muletillas expects a question_text, accentuation/pronunciation expect a
-phrase_text being read aloud, consistency expects free speech with an
-optional consigna. Live session is always free speech, so we cannot reuse
+The standalone prompts of the audio composable modules (muletillas,
+accentuation, pronunciation) assume specific input shapes: muletillas
+expects a question_text, accentuation/pronunciation expect a phrase_text
+being read aloud. Live session is always free speech, so we cannot reuse
 those prompts as-is. Instead we build a single prompt that contains a
-shared free-speech intro and one section per selected module.
+shared free-speech intro and one section per audio module selected.
 
-The sections here are tuned for free-speech evaluation: accentuation and
-pronunciation evaluate general articulatory quality across whatever the
-speaker says, not adherence to a target phrase. Muletillas and
-consistency keep their evaluation criteria from standalone but reframed
-around free speech.
+Facial expression is also a composable module from the client's
+perspective, but Gemini does not evaluate it from the audio. The
+facial summary is computed in the browser from the emotion classifier
+and submitted to the finalize endpoint, where persist_composed_evaluation
+handles it separately. This module is therefore intentionally absent
+from the prompt body and the response schema.
 """
 
 from __future__ import annotations
@@ -20,14 +20,28 @@ from __future__ import annotations
 from typing import Literal
 
 
-ComposableModule = Literal["muletillas", "accentuation", "pronunciation", "consistency"]
+ComposableModule = Literal[
+    "muletillas",
+    "accentuation",
+    "pronunciation",
+    "facial_expression",
+]
 
 
 VALID_MODULES: tuple[ComposableModule, ...] = (
     "muletillas",
     "accentuation",
     "pronunciation",
-    "consistency",
+    "facial_expression",
+)
+
+
+# Modules whose evaluation comes back from Gemini's text response.
+# facial_expression is excluded because its data comes from the client.
+_GEMINI_EVALUATED_MODULES: tuple[ComposableModule, ...] = (
+    "muletillas",
+    "accentuation",
+    "pronunciation",
 )
 
 
@@ -62,7 +76,7 @@ _CONSIGNA_TEMPLATE = """CONSIGNA DEL USUARIO PARA LA SESION:
 {consigna}
 
 Tenla en cuenta solo como contexto del tema; no penalices ni premies adherencia
-literal a la consigna salvo que el modulo de consistencia lo requiera explicitamente."""
+literal a la consigna."""
 
 
 _MULETILLAS_SECTION = """MODULO MULETILLAS:
@@ -112,27 +126,10 @@ Devuelve en la seccion "pronunciation" del JSON:
 - feedback (string en espanol): retroalimentacion concreta sobre pronunciacion, minimo 2 oraciones."""
 
 
-_CONSISTENCY_SECTION = """MODULO CONSISTENCIA:
-Evalua si el desempeno se mantiene estable de inicio a cierre del audio. Compara
-mentalmente el primer tercio, el tercio medio y el ultimo tercio del audio para
-detectar variaciones notables en ritmo, volumen, claridad, foco, confianza y
-estructura. La consistencia mide estabilidad, no perfeccion.
-
-Devuelve en la seccion "consistency" del JSON:
-- consistency_score (entero 0-100): estabilidad global del desempeno.
-- volatility_count (entero >= 0): numero de eventos de variacion notable detectados.
-  Cada caida brusca de volumen, claridad o foco cuenta como uno.
-- active_pct (entero 0-100): porcentaje del tiempo total del audio en que el
-  hablante estuvo produciendo voz activamente (excluye silencios largos y pausas
-  prolongadas para respirar). Si audio_intelligible=false, active_pct=0.
-- feedback (string en espanol): retroalimentacion concreta sobre estabilidad, minimo 2 oraciones."""
-
-
 _SECTION_BY_MODULE: dict[ComposableModule, str] = {
     "muletillas": _MULETILLAS_SECTION,
     "accentuation": _ACCENTUATION_SECTION,
     "pronunciation": _PRONUNCIATION_SECTION,
-    "consistency": _CONSISTENCY_SECTION,
 }
 
 
@@ -144,12 +141,17 @@ def build_composed_prompt(
     modules: list[ComposableModule],
     prompt_text: str | None = None,
 ) -> str:
-    """Build a single Gemini prompt containing a section per selected module.
+    """Build a single Gemini prompt containing a section per selected
+    audio module.
 
     The order of sections in the prompt follows VALID_MODULES, not the order of
     the input list, so equivalent inputs produce identical prompts. This makes
     prompt caching (if Gemini ever supports it for this content) deterministic
     and makes the prompt easier to inspect in logs.
+
+    Modules not present in _SECTION_BY_MODULE (currently just
+    facial_expression) are silently skipped at the prompt level: they are
+    valid composables but their data does not come from Gemini.
     """
 
     if not modules:
@@ -159,16 +161,30 @@ def build_composed_prompt(
     if invalid:
         raise ValueError(f"Invalid module(s): {invalid}")
 
-    ordered_unique: list[ComposableModule] = [m for m in VALID_MODULES if m in modules]
+    audio_modules: list[ComposableModule] = [
+        m for m in VALID_MODULES if m in modules and m in _SECTION_BY_MODULE
+    ]
 
-    parts: list[str] = [_HEADER, _AUDIO_GATE]
+    if not audio_modules:
+        # Caller asked only for facial_expression (or nothing prompt-shaped).
+        # We still need a sane prompt for Gemini to gate audio intelligibility
+        # against, so we ask only for audio_intelligible without any module section.
+        parts: list[str] = [
+            _HEADER,
+            _AUDIO_GATE,
+            "PASO 2 - No se solicitaron modulos evaluables por audio en esta corrida.",
+            _CLOSING,
+        ]
+        return "\n\n".join(parts)
+
+    parts = [_HEADER, _AUDIO_GATE]
 
     consigna = (prompt_text or "").strip()
     if consigna:
         parts.append(_CONSIGNA_TEMPLATE.format(consigna=consigna))
 
     parts.append("PASO 2 - EVALUACION POR MODULO:")
-    for module in ordered_unique:
+    for module in audio_modules:
         parts.append(_SECTION_BY_MODULE[module])
 
     parts.append(_CLOSING)
