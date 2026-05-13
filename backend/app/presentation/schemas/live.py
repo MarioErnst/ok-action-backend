@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # Inputs
@@ -16,6 +16,37 @@ class AbandonSessionRequest(BaseModel):
     finalize stay semantically distinct."""
 
     stop_reason: Literal["user_stop", "time_limit", "error"]
+
+
+class FacialSummaryInput(BaseModel):
+    """Aggregate emotion percentages computed in the browser from the
+    facial emotion classifier stream during a live session. Submitted
+    alongside the audio in the composed evaluation request when
+    facial_expression is among the selected modules.
+
+    The seven percentages must each fall in 0..100. The backend
+    re-normalizes them so they sum exactly to 100 before persisting
+    (the BD CHECK constraint requires it), so the client does not need
+    to be perfect; this validator only guards against grossly invalid
+    input."""
+
+    happy_pct: int = Field(ge=0, le=100)
+    sad_pct: int = Field(ge=0, le=100)
+    angry_pct: int = Field(ge=0, le=100)
+    surprised_pct: int = Field(ge=0, le=100)
+    fearful_pct: int = Field(ge=0, le=100)
+    disgusted_pct: int = Field(ge=0, le=100)
+    neutral_pct: int = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _at_least_one_nonzero(self) -> "FacialSummaryInput":
+        total = (
+            self.happy_pct + self.sad_pct + self.angry_pct + self.surprised_pct
+            + self.fearful_pct + self.disgusted_pct + self.neutral_pct
+        )
+        if total == 0:
+            raise ValueError("at least one emotion percentage must be > 0")
+        return self
 
 
 # Outputs
