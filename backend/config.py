@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     dev_user_password: str = ""
     dev_user_full_name: str = ""
 
+    # Demo user (consumed by backend/scripts/seed_demo_user.py).
+    # Optional: when missing the seed falls back to its baked-in defaults.
+    demo_user_email: str = ""
+    demo_user_password: str = ""
+    demo_user_full_name: str = ""
+
     @property
     def cloud_sql_instance_connection_name(self) -> str:
         return f"{self.gcp_project_id}:{self.gcp_region}:{self.gcp_instance_name}"
