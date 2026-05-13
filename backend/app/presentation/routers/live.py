@@ -20,6 +20,7 @@ from app.domain.entities.enums import StopReasonEnum
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.ai.composed_live_gemini import evaluate_composed_audio
+from app.infrastructure.ai.live_frame_gemini import evaluate_frame_audio
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.live import (
@@ -28,6 +29,7 @@ from app.presentation.schemas.live import (
     FacialSummaryInput,
     FinalizeSessionRequest,
     FinalizeSessionResponse,
+    FrameEvaluationResponse,
     LiveChildOutput,
     LiveMetricsOutput,
     LiveSessionDetail,
@@ -47,6 +49,7 @@ from app.use_cases.live.sessions import (
     start_live_session,
     validate_parent_live_session,
 )
+from app.use_cases.live.streaming.prompts import VALID_FRAME_MODULES, FrameModule
 
 router = APIRouter(prefix="/live", tags=["live"])
 
@@ -335,3 +338,95 @@ async def get_session_endpoint(
             for child in children
         ],
     )
+
+
+@router.post(
+    "/sessions/{session_id}/evaluate-frame",
+    response_model=FrameEvaluationResponse,
+)
+async def evaluate_frame_endpoint(
+    session_id: UUID,
+    audio: UploadFile,
+    frame_index: int = Form(...),
+    modules: list[str] = Form(...),
+    evaluated_so_far_seconds: int = Form(0),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> FrameEvaluationResponse:
+    """Evaluate one 5 to 8 second audio fragment of an ongoing live session.
+
+    The client streams these frames during the recording so the strike
+    system can detect muletillas, low accentuation scores and low
+    pronunciation scores in close-to-real-time. No persistence happens
+    here: results are returned to the client which decides whether the
+    strike threshold was crossed. The composed end-of-session call is
+    where data lands in BD.
+
+    A failed Gemini call (timeout, decode error, rate limit) returns
+    502; the client treats that as "skip this frame" and keeps the
+    counter unchanged.
+    """
+
+    if frame_index < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="frame_index must be non-negative",
+        )
+    if evaluated_so_far_seconds < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="evaluated_so_far_seconds must be non-negative",
+        )
+    if not modules:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one module is required",
+        )
+    invalid = [m for m in modules if m not in VALID_FRAME_MODULES]
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid module(s) for frame evaluation: {invalid}",
+        )
+    frame_modules = cast(list[FrameModule], modules)
+
+    try:
+        await validate_parent_live_session(db, user, session_id)
+    except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Audio frame is empty",
+        )
+    mime_type = audio.content_type or "audio/webm"
+
+    parsed = await evaluate_frame_audio(
+        audio_bytes=audio_bytes,
+        mime_type=mime_type,
+        modules=frame_modules,
+        evaluated_so_far_seconds=evaluated_so_far_seconds,
+    )
+    if parsed is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo evaluar el frame con Gemini",
+        )
+
+    payload: dict = {
+        "frame_index": frame_index,
+        "evaluated_until_seconds": int(parsed.get("evaluated_until_seconds", 0)),
+    }
+    if "muletillas" in parsed:
+        payload["muletillas"] = parsed["muletillas"]
+    if "accentuation" in parsed:
+        payload["accentuation"] = parsed["accentuation"]
+    if "pronunciation" in parsed:
+        payload["pronunciation"] = parsed["pronunciation"]
+
+    return FrameEvaluationResponse.model_validate(payload)
