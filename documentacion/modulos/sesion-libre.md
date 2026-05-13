@@ -1,5 +1,13 @@
 # Sesión Live (Composición) — Documentación Backend
 
+> El rediseño con sistema de strikes (endpoint `evaluate-frame` con pipeline
+> Gemini liviano por frame, `auto_stop_strikes` y `auto_stop_emotion` en
+> `StopReasonEnum`, módulo `consistency` reemplazado por `facial_expression`
+> en los composables) vive en [`live-strike-system.md`](./live-strike-system.md).
+> Este archivo describe el lifecycle de composición; los detalles del strike
+> system, prompts/streaming y persistencia de expresión facial van en el
+> documento del strike system.
+
 ## 1. Descripción funcional
 
 Una sesión "live" agrupa varias sesiones de módulos individuales en una unidad de práctica. Bajo el esquema uniforme la composición se modela vía `parent_id`: cada sesión componente vive en su propia tabla (`<modulo>_metrics` + `sessions(module=<modulo>)`) y apunta a la sesión live como padre.
