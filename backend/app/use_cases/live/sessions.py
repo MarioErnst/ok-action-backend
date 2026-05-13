@@ -136,15 +136,35 @@ async def _avg_completed_children_score(
     return int(round(float(avg_value)))
 
 
-async def finalize_live_session(
-    db: AsyncSession, user: User, session_id: UUID
-) -> tuple[Session, LiveMetrics]:
-    """Mark a live session completed.
+_AUTO_STOP_REASONS = frozenset(
+    {StopReasonEnum.auto_stop_strikes, StopReasonEnum.auto_stop_emotion}
+)
 
-    Sets ended_at, duration_ms, status='completed', score = avg of
-    completed children's scores. Creates the live_metrics row with
-    stop_reason='completed'. Use abandon for any other termination.
+
+async def finalize_live_session(
+    db: AsyncSession,
+    user: User,
+    session_id: UUID,
+    auto_stop_reason: StopReasonEnum | None = None,
+) -> tuple[Session, LiveMetrics]:
+    """Close a live session and persist its metrics row.
+
+    Default behavior (auto_stop_reason=None) marks the session as
+    completed and writes stop_reason='completed'.
+
+    When the client invokes finalize because the strike system or the
+    sustained-emotion watchdog triggered, it passes the corresponding
+    auto_stop_reason ('auto_stop_strikes' or 'auto_stop_emotion'). In that
+    case the session is marked aborted (the strike system cut it short, it
+    was not a natural completion) and stop_reason records why. Score is
+    still computed over completed children so any partial children stay
+    visible.
     """
+
+    if auto_stop_reason is not None and auto_stop_reason not in _AUTO_STOP_REASONS:
+        raise ValueError(
+            f"auto_stop_reason must be one of {sorted(r.value for r in _AUTO_STOP_REASONS)}"
+        )
 
     session_row = await _load_active_live_session(db, user, session_id)
 
@@ -156,11 +176,17 @@ async def finalize_live_session(
     session_row.duration_ms = int(
         (ended_at - session_row.started_at).total_seconds() * 1000
     )
-    session_row.status = SessionStatusEnum.completed
+
+    if auto_stop_reason is None:
+        session_row.status = SessionStatusEnum.completed
+        persisted_reason = StopReasonEnum.completed
+    else:
+        session_row.status = SessionStatusEnum.aborted
+        persisted_reason = auto_stop_reason
 
     metrics_row = LiveMetrics(
         session_id=session_row.id,
-        stop_reason=StopReasonEnum.completed,
+        stop_reason=persisted_reason,
     )
     db.add(metrics_row)
 
