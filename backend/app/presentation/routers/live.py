@@ -26,6 +26,7 @@ from app.presentation.schemas.live import (
     AbandonSessionRequest,
     ComposedAudioEvaluationResponse,
     FacialSummaryInput,
+    FinalizeSessionRequest,
     FinalizeSessionResponse,
     LiveChildOutput,
     LiveMetricsOutput,
@@ -78,12 +79,30 @@ async def start_session_endpoint(
 )
 async def finalize_session_endpoint(
     session_id: UUID,
+    payload: FinalizeSessionRequest | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> FinalizeSessionResponse:
+    """Close a live session.
+
+    With an empty body (or auto_stop_reason=None) the session goes to
+    'completed' with stop_reason='completed'. When auto_stop_reason is
+    set the session is marked 'aborted' with the matching stop_reason,
+    while the score is still computed over completed children. This is
+    how the strike system and the sustained-emotion watchdog notify the
+    backend that the live was cut.
+    """
+
+    auto_stop_reason = None
+    if payload is not None and payload.auto_stop_reason is not None:
+        auto_stop_reason = StopReasonEnum(payload.auto_stop_reason)
+
     try:
-        session_row, _ = await finalize_live_session(
-            db=db, user=user, session_id=session_id
+        session_row, metrics_row = await finalize_live_session(
+            db=db,
+            user=user,
+            session_id=session_id,
+            auto_stop_reason=auto_stop_reason,
         )
     except SessionNotFoundError:
         raise HTTPException(
@@ -102,9 +121,10 @@ async def finalize_session_endpoint(
     ).scalar_one()
     return FinalizeSessionResponse(
         session_id=session_row.id,
-        status="completed",
+        status=session_row.status.value,
         score=session_row.score,
         children_count=int(children_count),
+        stop_reason=metrics_row.stop_reason.value,
     )
 
 
