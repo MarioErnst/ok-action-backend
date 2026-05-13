@@ -1,9 +1,12 @@
 """Per-frame Gemini call for live session strike detection.
 
 This client mirrors composed_live_gemini.py but is tuned for frames:
-- Shorter timeout (5 s by default vs the composed default) — if a frame
-  is slower than that the client side is better off dropping it than
-  holding up the strike pipeline.
+- Audio + structured-output Gemini Flash calls run in the 3-15 s range
+  in practice (cold start + decode + thinking + JSON schema generation).
+  We default to a 20 s timeout to absorb cold-start latency on the
+  first frames of a session. If a call still misses the deadline we
+  log + return None so the strike pipeline can drop the frame and
+  move on rather than blocking the chain.
 - No retry. Losing a single frame is acceptable; the next one will be
   ready in 5 to 8 seconds and the strike counter is tolerant.
 - Same fixed model id (no *_latest aliases).
@@ -29,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 _MODEL = "gemini-2.5-flash"
-_DEFAULT_TIMEOUT_S = 5.0
+_DEFAULT_TIMEOUT_S = 20.0
 
 
 async def evaluate_frame_audio(
