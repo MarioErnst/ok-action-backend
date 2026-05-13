@@ -1,12 +1,17 @@
 """Composed Gemini response schema builder for live audio evaluation.
 
-Mirrors the prompt sections in prompts.py: each module contributes a top-level
-key to the unified response schema, and only the selected modules appear in
-the schema. The shape per module is intentionally smaller than the standalone
-schemas: live evaluation persists only the columns that exist in
+Mirrors the prompt sections in prompts.py: each audio module contributes a
+top-level key to the unified response schema, and only the selected modules
+appear in the schema. The shape per module is intentionally smaller than the
+standalone schemas: live evaluation persists only the columns that exist in
 <modulo>_metrics, so we ask Gemini for those plus a feedback string per
 module. Anything else (per-event timelines, phoneme-level errors) would just
 be discarded.
+
+facial_expression is a valid composable from the client's perspective but
+its data does not come from Gemini's text response — it comes from the
+client's emotion classifier and is submitted directly to the finalize
+endpoint. The schema therefore does not include a facial_expression key.
 
 Field types are strict integers (not numbers) to avoid floats that violate
 Pydantic int validation downstream — same rule we adopted in the standalone
@@ -82,38 +87,23 @@ _PRONUNCIATION_SECTION_SCHEMA = {
 }
 
 
-_CONSISTENCY_SECTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "consistency_score": {"type": "integer"},
-        "volatility_count": {"type": "integer"},
-        "active_pct": {"type": "integer"},
-        "feedback": {"type": "string"},
-    },
-    "required": [
-        "consistency_score",
-        "volatility_count",
-        "active_pct",
-        "feedback",
-    ],
-}
-
-
 _SCHEMA_BY_MODULE: dict[ComposableModule, dict[str, Any]] = {
     "muletillas": _MULETILLAS_SECTION_SCHEMA,
     "accentuation": _ACCENTUATION_SECTION_SCHEMA,
     "pronunciation": _PRONUNCIATION_SECTION_SCHEMA,
-    "consistency": _CONSISTENCY_SECTION_SCHEMA,
 }
 
 
 def build_composed_schema(modules: list[ComposableModule]) -> dict[str, Any]:
     """Build a JSON schema for the unified Gemini response.
 
-    Only selected modules appear as keys. audio_intelligible is always present
-    so the orchestrator can short-circuit persistence when Gemini reports the
-    audio is empty or unintelligible. The order of keys follows VALID_MODULES
-    to keep schemas deterministic regardless of input ordering.
+    Only selected audio modules appear as keys. audio_intelligible is always
+    present so the orchestrator can short-circuit persistence when Gemini
+    reports the audio is empty or unintelligible. The order of keys follows
+    VALID_MODULES to keep schemas deterministic regardless of input ordering.
+
+    facial_expression is filtered out at this layer because it does not
+    come from Gemini.
     """
 
     if not modules:
@@ -123,12 +113,14 @@ def build_composed_schema(modules: list[ComposableModule]) -> dict[str, Any]:
     if invalid:
         raise ValueError(f"Invalid module(s): {invalid}")
 
-    ordered_unique: list[ComposableModule] = [m for m in VALID_MODULES if m in modules]
+    audio_modules: list[ComposableModule] = [
+        m for m in VALID_MODULES if m in modules and m in _SCHEMA_BY_MODULE
+    ]
 
     properties: dict[str, Any] = {"audio_intelligible": {"type": "boolean"}}
     required: list[str] = ["audio_intelligible"]
 
-    for module in ordered_unique:
+    for module in audio_modules:
         properties[module] = _SCHEMA_BY_MODULE[module]
         required.append(module)
 
