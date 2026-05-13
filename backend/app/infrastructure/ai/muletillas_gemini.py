@@ -37,6 +37,16 @@ CRITERIOS DE EVALUACION:
 - Severidad por muletilla: "high" si aparece 3 o mas veces, "medium" si 2 veces, "low" si 1 vez
 - muletillas_per_minute: estima duracion del audio y calcula frecuencia
 
+TRANSCRIPCION:
+Ademas de las metricas, devuelve la transcripcion exacta de lo que dijo el hablante en el campo \
+`transcript`, y un arreglo `muletillas_positions` con la posicion de cada ocurrencia de muletilla \
+dentro de esa transcripcion. La posicion se expresa como un indice 0-based de carácter inicial y \
+final (`start_char` inclusivo, `end_char` exclusivo) dentro de `transcript`. Es decir, \
+`transcript[start_char:end_char]` debe devolver exactamente la muletilla original.
+
+Si el hablante usa la misma muletilla N veces, debe aparecer N entradas en `muletillas_positions`, \
+una por ocurrencia, en el orden en que se dicen.
+
 Devuelve un JSON con la siguiente estructura exacta:
 {{
   "overall_score": <numero 0-100>,
@@ -50,6 +60,14 @@ Devuelve un JSON con la siguiente estructura exacta:
       "count": <entero>,
       "severity": "<low|medium|high>",
       "suggestion": "<sugerencia concreta y accionable en espanol>"
+    }}
+  ],
+  "transcript": "<texto exacto del hablante, en espanol>",
+  "muletillas_positions": [
+    {{
+      "word": "<muletilla exacta tal como aparece en transcript>",
+      "start_char": <entero 0-based, inclusivo>,
+      "end_char": <entero 0-based, exclusivo>
     }}
   ],
   "feedback": "<retroalimentacion general constructiva, minimo 2 oraciones>",
@@ -80,6 +98,19 @@ MULETILLAS_RESPONSE_SCHEMA = {
                 "required": ["word", "count", "severity", "suggestion"],
             },
         },
+        "transcript": {"type": "string"},
+        "muletillas_positions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "word": {"type": "string"},
+                    "start_char": {"type": "integer"},
+                    "end_char": {"type": "integer"},
+                },
+                "required": ["word", "start_char", "end_char"],
+            },
+        },
         "feedback": {"type": "string"},
         "strengths": {"type": "string"},
         "improvement_areas": {"type": "string"},
@@ -91,6 +122,8 @@ MULETILLAS_RESPONSE_SCHEMA = {
         "total_muletillas_count",
         "muletillas_per_minute",
         "muletillas_detected",
+        "transcript",
+        "muletillas_positions",
         "feedback",
         "strengths",
         "improvement_areas",
