@@ -52,7 +52,9 @@ Para acentuación standalone: `module='accentuation'`, `parent_id=NULL`, `status
 
 ### Evaluación por frase (efímera)
 
-`PhraseSpecificError`: `word`, `expected_stress`, `actual_issue`, `suggestion`. (Texto generado por Gemini.)
+`PhraseSpecificError`: `word`, `word_index` (0-based, índice de la palabra dentro de la frase), `actual_stressed_syllable_index` (0-based, sílaba que el usuario realmente acentuó; -1 si Gemini no pudo determinar), `expected_stress`, `actual_issue`, `suggestion`. Texto generado por Gemini.
+
+Los índices `word_index` y `actual_stressed_syllable_index` los consume el frontend (`StressedPhrase` atom + `spanishStress` utility) para marcar visualmente la sílaba tónica esperada en color de acento y, cuando difieren, la sílaba que el usuario acentuó en color de error. Esto convierte feedback genérico ("hubo un error de acentuación") en feedback accionable ("acentuaste pa-JA-ro, debería ser PÁ-ja-ro").
 
 `PhraseEvaluation`: `phrase_text`, `phrase_index`, `overall_score` (0-100, ephemeral, no persistido), `pronunciation_score`, `rhythm_score`, `intonation_score`, `stress_score` (todos 0-100), `feedback`, `specific_errors`.
 

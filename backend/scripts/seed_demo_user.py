@@ -30,11 +30,12 @@ from app.infrastructure.security.hashing import hash_password
 from config import settings
 
 
-# Demo identity for the recording. Password is intentionally simple but
-# meets the passlib bcrypt scheme used by the auth flow.
-DEMO_EMAIL = "mario@okaction.cl"
-DEMO_PASSWORD = "Demo1234!"
-DEMO_FULL_NAME = "Mario Jr"
+# Demo identity for the recording. Read from settings so the credentials live
+# in `.env` and not in source, but keep the previous baked-in values as a
+# fallback so existing environments that haven't been updated still work.
+DEMO_EMAIL = settings.demo_user_email or "mario@okaction.cl"
+DEMO_PASSWORD = settings.demo_user_password or "Demo1234!"
+DEMO_FULL_NAME = settings.demo_user_full_name or "Mario Jr"
 
 # Span and shape of the activity we synthesize. 60 days back from "now"
 # (UTC) gives the dashboard charts a meaningful sample once the demo runs.

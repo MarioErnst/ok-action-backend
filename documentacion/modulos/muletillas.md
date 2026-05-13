@@ -71,7 +71,11 @@ Una fila por palabra normalizada por sesión. PK compuesta evita duplicados. Per
 
 `MuletillaDetectedEphemeral`: `word`, `count` (>=1), `severity` (`low|medium|high`), `suggestion` (texto Gemini, no persistido).
 
-`MuletillasEvaluationResponse`: `overall_score`, `fluency_score`, `muletillas_score` (todos 0-100, ephemerals), `total_muletillas_count`, `muletillas_per_minute` (float), `muletillas_detected`, `feedback`, `strengths`, `improvement_areas`.
+`MuletillaPosition`: `word`, `start_char` (0-based, inclusivo), `end_char` (0-based, exclusivo). Marca cada ocurrencia individual de muletilla dentro del `transcript`.
+
+`MuletillasEvaluationResponse`: `overall_score`, `fluency_score`, `muletillas_score` (todos 0-100, ephemerals), `total_muletillas_count`, `muletillas_per_minute` (float), `muletillas_detected`, `transcript` (texto exacto que pronunció el usuario), `muletillas_positions` (lista de `MuletillaPosition`, una por ocurrencia), `feedback`, `strengths`, `improvement_areas`.
+
+El `transcript` y `muletillas_positions` permiten al frontend renderizar la transcripción con cada muletilla resaltada en color de error (atom `HighlightedTranscript`), convirtiendo "usaste 3 muletillas" en "usaste 'o sea' acá, 'este' acá, 'pues' acá". Son ephemerals: viajan en la respuesta HTTP pero no se persisten en BD.
 
 `RandomQuestionResponse`: `question`.
 

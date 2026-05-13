@@ -16,6 +16,10 @@ class PhonationExerciseInput(BaseModel):
     stability_score: int = Field(ge=0, le=100)
     breaks_count: int = Field(ge=0)
     in_range_pct: int = Field(ge=0, le=100)
+    # Extended metrics — optional so legacy clients keep working.
+    max_sustained_voicing_ms: int | None = Field(default=None, ge=0)
+    db_slope: float | None = None
+    weak_phrase_endings_count: int | None = Field(default=None, ge=0)
 
 
 class PhonationMetricsInput(BaseModel):
@@ -62,6 +66,9 @@ class PhonationExerciseOutput(BaseModel):
     stability_score: int
     breaks_count: int
     in_range_pct: int
+    max_sustained_voicing_ms: int | None = None
+    db_slope: float | None = None
+    weak_phrase_endings_count: int | None = None
 
 
 class PhonationMetricsOutput(BaseModel):

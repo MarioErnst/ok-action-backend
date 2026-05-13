@@ -61,6 +61,9 @@ async def create_phonation_session(
             stability_score=exercise.stability_score,
             breaks_count=exercise.breaks_count,
             in_range_pct=exercise.in_range_pct,
+            max_sustained_voicing_ms=exercise.max_sustained_voicing_ms,
+            db_slope=exercise.db_slope,
+            weak_phrase_endings_count=exercise.weak_phrase_endings_count,
         )
         for exercise in payload.exercises
     ]
