@@ -28,6 +28,8 @@ class StopReasonEnum(str, enum.Enum):
     time_limit = "time_limit"
     error = "error"
     completed = "completed"
+    auto_stop_strikes = "auto_stop_strikes"
+    auto_stop_emotion = "auto_stop_emotion"
 
 
 class ExerciseTypeEnum(str, enum.Enum):
