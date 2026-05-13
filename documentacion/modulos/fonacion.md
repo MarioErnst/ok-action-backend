@@ -64,6 +64,21 @@ Una fila por tipo de ejercicio dentro de la sesión. Permite agregados longitudi
 | `stability_score` | SMALLINT | NOT NULL, CHECK 0-100 | Estabilidad del ejercicio. |
 | `breaks_count` | INT | NOT NULL DEFAULT 0 | Quiebres del ejercicio. |
 | `in_range_pct` | SMALLINT | NOT NULL, CHECK 0-100 | Porcentaje de tiempo dentro del rango objetivo. |
+| `max_sustained_voicing_ms` | INT | NULLABLE, CHECK ≥ 0 | Bloque voiced ininterrumpido más largo dentro del ejercicio (ver §3.1). |
+| `db_slope` | NUMERIC(6,3) | NULLABLE | Pendiente promedio de dB sobre el tiempo (dB/s); negativa = desvanece. |
+| `weak_phrase_endings_count` | INT | NULLABLE, CHECK ≥ 0 | Cantidad de bloques voiced cuyo final cae más de 5 dB debajo de su inicio. |
+
+Las tres columnas extendidas se agregaron en la migración `0004_phonation_metrics` y son nullable a propósito: las filas previas a esa rollout siguen siendo válidas con `NULL` en estos campos.
+
+### 3.1 Métricas extendidas (voiceSegmentation)
+
+Estas tres métricas son una **alternativa pragmática** a jitter/shimmer/HNR de la literatura clínica. Se eligieron porque son robustas frente al ruido del setup (mic de notebook, ambiente arbitrario) y entregan feedback que un orador puede accionar — no diagnósticos de patología vocal.
+
+- **`max_sustained_voicing_ms`**: el bloque continuo de voz más largo dentro del ejercicio. Es el indicador #1 de soporte respiratorio sin penalizar pausas naturales (que son separadores legítimos en frases). Referencia: >3000 ms = buen soporte, 1500-3000 ms = aceptable, <1500 ms = soporte débil.
+- **`db_slope`**: pendiente promedio de dB en los bloques voiced, en dB/s. Cerca de 0 = volumen estable. Negativa = el usuario se queda sin aire. |slope| ≤ 1 dB/s es estable; ≤ 3 dB/s es leve descenso; > 3 dB/s es desvanecimiento marcado.
+- **`weak_phrase_endings_count`**: cantidad de bloques voiced donde el dB del último frame está >5 dB debajo del primer frame. Captura el patrón "se queda sin aire al final de la frase".
+
+Estas métricas se computan en el frontend usando el service compartido `shared/services/voiceSegmentation.ts` (VAD + clasificación de silencios). El mismo service alimenta el módulo de Pausas para clasificar los silencios en `natural | rhetorical | break`.
 
 ### Decisiones de diseño
 
