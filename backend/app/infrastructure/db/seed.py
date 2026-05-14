@@ -132,6 +132,101 @@ def _seed_precision_prompts(session: OrmSession) -> None:
             print(f"Precision prompt already exists: '{text[:50]}...'")
 
 
+def _seed_accentuation_phrases(session: OrmSession) -> None:
+    """Seed accentuation phrases in the unified prompts catalog.
+
+    `category` (declarative / interrogative / exclamative) drives UI grouping
+    and Gemini's prompt template — it's the same field used in precision and
+    linguistic_versatility but with module-specific semantics. Idempotent on
+    (module, text).
+    """
+
+    phrases = [
+        ("El pájaro cantaba sobre el árbol más alto del jardín.", "declarative"),
+        ("La música clásica transmite emociones profundas.", "declarative"),
+        ("¿Dónde compraste esa lámpara tan bonita?", "interrogative"),
+        ("¡Qué espectáculo tan magnífico!", "exclamative"),
+        ("El médico le recomendó tomar la medicina después del almuerzo.", "declarative"),
+        ("Los exámenes de matemáticas fueron difíciles pero necesarios.", "declarative"),
+    ]
+    for text, category in phrases:
+        existing = session.execute(
+            select(Prompt).where(
+                Prompt.module == ModuleEnum.accentuation,
+                Prompt.text == text,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                Prompt(
+                    module=ModuleEnum.accentuation,
+                    text=text,
+                    category=category,
+                    difficulty="basic",
+                    language="es",
+                    is_active=True,
+                )
+            )
+            print(f"Accentuation phrase seeded: '{text[:50]}...'")
+        else:
+            print(f"Accentuation phrase already exists: '{text[:50]}...'")
+
+
+def _seed_pronunciation_phrases(session: OrmSession) -> None:
+    """Seed pronunciation phrases in the unified prompts catalog.
+
+    `difficulty` (basico / intermedio / avanzado) matches the level selector
+    in the frontend. The phonetic complexity grows with difficulty:
+    basic CV words, intermediate complex syllables, advanced clusters and
+    tongue-twister-like density. Idempotent on (module, text).
+    """
+
+    phrases = [
+        # basic
+        ("La luna brilla sobre el mar.", "basico"),
+        ("Mi mamá come una naranja.", "basico"),
+        ("El niño juega en el parque.", "basico"),
+        ("La flor roja es muy bonita.", "basico"),
+        ("Veo pájaros en el jardín.", "basico"),
+        ("El perro corre por el campo.", "basico"),
+        # intermediate
+        ("El ferrocarril recorre la sierra.", "intermedio"),
+        ("La lluvia cae sobre la calle mojada.", "intermedio"),
+        ("Jorge trabaja en la ciudad grande.", "intermedio"),
+        ("El reloj de la torre marca las tres.", "intermedio"),
+        ("Guillermo bebe jugo de naranja fresca.", "intermedio"),
+        ("La jirafa come hojas verdes del árbol.", "intermedio"),
+        # advanced
+        ("El extraordinario guerrero cruzó la pradera.", "avanzado"),
+        ("La proyección refleja brillantes colores rojizos.", "avanzado"),
+        ("El ferroviario corrigió rápidamente el horario.", "avanzado"),
+        ("Glorioso amanecer sobre las verdes praderas rurales.", "avanzado"),
+        ("Jorge rechazó la oferta extraordinaria del generoso jefe.", "avanzado"),
+        ("El joven relojero reparó el viejo ferrocarril.", "avanzado"),
+    ]
+    for text, difficulty in phrases:
+        existing = session.execute(
+            select(Prompt).where(
+                Prompt.module == ModuleEnum.pronunciation,
+                Prompt.text == text,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                Prompt(
+                    module=ModuleEnum.pronunciation,
+                    text=text,
+                    category="general",
+                    difficulty=difficulty,
+                    language="es",
+                    is_active=True,
+                )
+            )
+            print(f"Pronunciation phrase seeded: '{text[:50]}...'")
+        else:
+            print(f"Pronunciation phrase already exists: '{text[:50]}...'")
+
+
 def _seed_pause_prompts(session: OrmSession) -> None:
     """Seed open-ended prompts for the pauses module.
 
@@ -291,6 +386,8 @@ def seed() -> None:
         _seed_linguistic_versatility_prompts(session)
         _seed_muletillas_prompts(session)
         _seed_pause_prompts(session)
+        _seed_accentuation_phrases(session)
+        _seed_pronunciation_phrases(session)
         _seed_dev_user(session, role)
         session.commit()
         print("Seed completed")
