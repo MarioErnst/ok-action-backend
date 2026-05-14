@@ -200,3 +200,50 @@ Alternativa: usar el endpoint `abandon` existente con los nuevos `stop_reason`. 
 - Tabla `live_frame_evaluations` para trazabilidad longitudinal (no para esta versión).
 - Endpoint para re-evaluar una sesión cortada (no para esta versión).
 - Configurabilidad del umbral 55 vía endpoint (no para esta versión, constante en código).
+
+## 11. Hotfix de grounding en la evaluación compuesta
+
+A partir del hotfix `live-evaluation-grounding`, el prompt y el schema del composed
+contra Gemini incorporan un mecanismo de anti-alucinación:
+
+### Campo `transcript` en la raíz del JSON
+
+Cuando se solicita al menos un módulo evaluable por audio (`muletillas`,
+`accentuation`, `pronunciation`), el schema requiere un campo `transcript` en la
+raíz con la transcripción literal del audio. La prompt obliga a transcribir
+**antes** de evaluar y declara que cualquier item anclado (muletilla, error
+fonémico, error prosódico) que el modelo reporte debe corresponder a una palabra
+o segmento del propio `transcript`. Si la palabra no aparece, no puede listarla.
+
+### Items anclados por módulo (efímeros, no persistidos)
+
+| Módulo | Campo nuevo | Forma |
+|---|---|---|
+| `muletillas` | `muletillas_positions[]` | `{word, start_char, end_char}` con la contraintegridad `transcript[start_char:end_char] == word`. Una entrada por ocurrencia. |
+| `accentuation` | `prosodic_errors[]` | `{word, expected_stress, actual_issue, suggestion}`; `word` debe aparecer en `transcript`. |
+| `pronunciation` | `phoneme_errors[]` | `{phoneme, word, actual_issue, suggestion}`; `word` debe aparecer en `transcript`. |
+
+Todos estos campos son **efímeros**: viajan en la respuesta HTTP para que el
+frontend renderice retroalimentación accionable y como contrato anti-alucinación
+para el LLM. **No se persisten en BD** — las tablas `<modulo>_metrics` no tienen
+columnas para texto generado por LLM (regla CLAUDE.md backend). `persist.py`
+ignora estos campos al guardar.
+
+### `temperature=0.2` en la llamada Gemini
+
+`composed_live_gemini.py` y los tres servicios standalone (`muletillas_gemini.py`,
+`pronunciation_gemini.py`, `gemini.py` de acentuación) ahora setean
+`temperature=0.2` en `GenerateContentConfig`. Reduce la varianza de las tareas de
+detección y clasificación (listas de muletillas, errores) manteniendo naturalidad
+en el campo `feedback`.
+
+### Por qué este hotfix
+
+- **Antes**: Gemini reportaba muletillas que no estaban en el audio (sesgo del
+  prompt que listaba ejemplos típicos como "la verdad", "de hecho"). La
+  pronunciación devolvía solo scores agregados sin errores accionables. La
+  acentuación, idem.
+- **Ahora**: el transcript es contrato. Los listados de muletillas, errores
+  fonémicos y errores prosódicos están anclados a palabras del transcript. El
+  frontend puede mostrar al usuario qué se transcribió y dónde estuvieron los
+  errores, permitiéndole verificar contra el audio real.
