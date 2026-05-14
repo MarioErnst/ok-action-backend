@@ -28,6 +28,22 @@ Una sesión de acentuación se representa con dos filas: la raíz `sessions` y s
 
 Para acentuación standalone: `module='accentuation'`, `parent_id=NULL`, `status='completed'`. `score` lo deriva el backend.
 
+### `accentuation_phrase_evaluations` (N:1 con `sessions`)
+
+Tabla hija introducida por la migración 0007 para B7. Una fila por frase evaluada dentro de la sesión. PK compuesta `(session_id, phrase_index)` evita duplicados y matchea la convención de las otras tablas hijas (`precision_rounds`, `linguistic_versatility_rounds`).
+
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK compuesta + FK `sessions.id` ON DELETE CASCADE | Sesión a la que pertenece. |
+| `phrase_index` | SMALLINT | PK compuesta, CHECK >= 0 | Posición de la frase dentro de la sesión (0..N-1). |
+| `prompt_id` | UUID | NOT NULL FK `prompts.id` ON DELETE RESTRICT | El prompt del catálogo evaluado. RESTRICT bloquea borrar prompts con histórico. |
+| `pronunciation_score` | SMALLINT | NOT NULL, CHECK 0-100 | Pronunciación de esta frase. |
+| `rhythm_score` | SMALLINT | NOT NULL, CHECK 0-100 | Ritmo de esta frase. |
+| `intonation_score` | SMALLINT | NOT NULL, CHECK 0-100 | Entonación de esta frase. |
+| `stress_score` | SMALLINT | NOT NULL, CHECK 0-100 | Acentuación de esta frase. |
+
+Índice `ix_accentuation_phrase_evaluations_prompt ON prompt_id` para soportar el query de `weakest_prompts` (agrega por `prompt_id` filtrando por usuario). Sin texto LLM persistido (`feedback`/`specific_errors` siguen ephemerals).
+
 ### `accentuation_metrics` (1:1 con `sessions`)
 
 | Columna | Tipo | Restricciones | Descripción |
@@ -100,9 +116,11 @@ Detalle. Retorna `None` para no-encontrado o cross-user (router → 404 sin dist
 
 - `GET /accentuation/phrases` → 200 `list[{id, text, category}]`. Catálogo activo del módulo, ordenado por `created_at, id` para estabilidad. Reemplaza la lista hardcoded del frontend.
 - `POST /accentuation/evaluate` — multipart con `audio` (UploadFile), `phrase_text` (Form), `phrase_index` (Form). Retorna `PhraseEvaluation` (no persiste nada). 502 si Gemini falla.
-- `POST /accentuation/sessions` → 201 / 422.
+- `POST /accentuation/sessions` → 201 / 422. Payload incluye `phrases[]` con `prompt_id` + 4 sub-scores por frase (B7). 422 si `metrics.phrases_count != len(phrases)`, si hay `phrase_index` duplicado o fuera de rango, o si algún `prompt_id` no pertenece al catálogo activo.
 - `GET /accentuation/sessions` → 200, lista standalone ordenada por `started_at DESC`.
 - `GET /accentuation/sessions/{id}` → 200 / 404.
+- `GET /accentuation/sessions/{id}/phrases` → 200 `list[AccentuationPhraseEvaluationOutput]` con texto + categoría del prompt unidos al detalle por frase (B7). Lista vacía para sesiones previas a B7 (no hay filas en la tabla hija). 404 si la sesión no existe o pertenece a otro usuario.
+- `GET /accentuation/insights/weakest-prompts?limit=5&min_practice_count=1` → 200 `list[AccentuationWeakestPromptOutput]`. Top-N prompts con peor score promedio del usuario, ordenado ascendente. `limit ∈ (0, 20]`. `min_practice_count` filtra prompts con poca data. Alimenta la tarjeta "Tus frases más difíciles".
 
 Todos los endpoints requieren Bearer JWT.
 

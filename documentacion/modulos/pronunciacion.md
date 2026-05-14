@@ -28,6 +28,22 @@ Una sesión de pronunciación se representa con dos filas: la raíz `sessions` y
 
 Para pronunciación standalone: `module='pronunciation'`, `parent_id=NULL`, `status='completed'`. `score` lo deriva el backend.
 
+### `pronunciation_phrase_evaluations` (N:1 con `sessions`)
+
+Tabla hija introducida por la migración 0007 para B7. Una fila por frase evaluada dentro de la sesión. PK compuesta `(session_id, phrase_index)`.
+
+| Columna | Tipo | Restricciones | Descripción |
+|---------|------|---------------|-------------|
+| `session_id` | UUID | PK compuesta + FK `sessions.id` ON DELETE CASCADE | Sesión a la que pertenece. |
+| `phrase_index` | SMALLINT | PK compuesta, CHECK >= 0 | Posición de la frase dentro de la sesión (0..N-1). |
+| `prompt_id` | UUID | NOT NULL FK `prompts.id` ON DELETE RESTRICT | El prompt del catálogo evaluado. |
+| `vowel_score` | SMALLINT | NOT NULL, CHECK 0-100 | Producción vocálica. |
+| `consonant_score` | SMALLINT | NOT NULL, CHECK 0-100 | Producción consonántica. |
+| `fluency_score` | SMALLINT | NOT NULL, CHECK 0-100 | Fluidez fonética. |
+| `intelligibility_score` | SMALLINT | NOT NULL, CHECK 0-100 | Inteligibilidad. |
+
+Índice `ix_pronunciation_phrase_evaluations_prompt ON prompt_id`. Sin texto LLM persistido (`feedback`/`phoneme_errors` siguen ephemerals).
+
 ### `pronunciation_metrics` (1:1 con `sessions`)
 
 | Columna | Tipo | Restricciones | Descripción |
@@ -100,9 +116,11 @@ Detalle. Retorna `None` para no-encontrado o cross-user.
 
 - `GET /pronunciation/phrases?level=...` → 200 `list[{id, text, difficulty}]`. Catálogo activo del módulo. `level` (opcional) filtra por `prompts.difficulty` (`basico` | `intermedio` | `avanzado`). Sin el query param, devuelve el catálogo completo. Reemplaza la lista hardcoded del frontend.
 - `POST /pronunciation/evaluate` — multipart con `audio`, `phrase_text`, `phrase_index`, `level` (Form). Retorna `PhraseEvaluation`. 502 si Gemini falla.
-- `POST /pronunciation/sessions` → 201 / 422.
+- `POST /pronunciation/sessions` → 201 / 422. Payload incluye `phrases[]` con `prompt_id` + 4 sub-scores por frase (B7). Mismas validaciones de consistencia que acentuación.
 - `GET /pronunciation/sessions` → 200, lista standalone ordenada por `started_at DESC`.
 - `GET /pronunciation/sessions/{id}` → 200 / 404.
+- `GET /pronunciation/sessions/{id}/phrases` → 200 `list[PronunciationPhraseEvaluationOutput]` con texto + difficulty del prompt unidos al detalle por frase (B7). Lista vacía para sesiones previas a B7. 404 si la sesión no existe o pertenece a otro usuario.
+- `GET /pronunciation/insights/weakest-prompts?limit=5&min_practice_count=1&level=...` → 200 `list[PronunciationWeakestPromptOutput]`. Top-N prompts con peor score promedio del usuario. `level` (opcional) filtra por dificultad. Alimenta la tarjeta "Tus frases más difíciles".
 
 Todos requieren Bearer JWT.
 
