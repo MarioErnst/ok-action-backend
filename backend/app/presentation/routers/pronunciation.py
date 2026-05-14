@@ -16,18 +16,23 @@ from app.presentation.schemas.pronunciation import (
     PhonemeError,
     PhraseEvaluation,
     PronunciationMetricsOutput,
+    PronunciationPhraseEvaluationOutput,
     PronunciationPhraseOutput,
     PronunciationSessionCreate,
     PronunciationSessionDetail,
     PronunciationSessionListItem,
+    PronunciationWeakestPromptOutput,
 )
 from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.pronunciation.evaluate_phrase import evaluate_phrase
 from app.use_cases.pronunciation.prompts import list_phrases
 from app.use_cases.pronunciation.sessions import (
+    PronunciationPromptNotAvailableError,
     create_pronunciation_session,
     get_pronunciation_session,
     list_pronunciation_sessions,
+    list_session_phrases,
+    weakest_prompts,
 )
 
 router = APIRouter(prefix="/pronunciation", tags=["pronunciation"])
@@ -125,7 +130,68 @@ async def create_session_endpoint(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         )
+    except PronunciationPromptNotAvailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
     return _build_detail(session_row, metrics_row)
+
+
+@router.get(
+    "/sessions/{session_id}/phrases",
+    response_model=list[PronunciationPhraseEvaluationOutput],
+)
+async def list_session_phrases_endpoint(
+    session_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[PronunciationPhraseEvaluationOutput]:
+    """Per-phrase breakdown for the given session.
+
+    Returns empty list for sessions persisted before B7. 404 if the session
+    does not exist or belongs to a different user.
+    """
+
+    rows = await list_session_phrases(db=db, user=user, session_id=session_id)
+    if rows is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sesión de pronunciación no encontrada",
+        )
+    return [PronunciationPhraseEvaluationOutput.model_validate(r) for r in rows]
+
+
+@router.get(
+    "/insights/weakest-prompts",
+    response_model=list[PronunciationWeakestPromptOutput],
+)
+async def weakest_prompts_endpoint(
+    limit: int = 5,
+    min_practice_count: int = 1,
+    level: str | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[PronunciationWeakestPromptOutput]:
+    """Prompts where the user has the lowest historical avg score.
+
+    Drives the "tus frases más difíciles" entry card in the UI. `level`
+    (optional) narrows to one difficulty so the UI can show weakest per
+    level. Sorted ascending by avg_score.
+    """
+
+    if limit <= 0 or limit > 20:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="limit must be in (0, 20]",
+        )
+    rows = await weakest_prompts(
+        db=db,
+        user=user,
+        limit=limit,
+        min_practice_count=min_practice_count,
+        difficulty=level,
+    )
+    return [PronunciationWeakestPromptOutput.model_validate(r) for r in rows]
 
 
 @router.get("/sessions", response_model=list[PronunciationSessionListItem])

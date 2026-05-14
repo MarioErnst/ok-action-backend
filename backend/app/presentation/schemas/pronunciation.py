@@ -67,16 +67,70 @@ class PronunciationMetricsOutput(BaseModel):
     phrases_count: int
 
 
+class PronunciationPhraseEvaluationInput(BaseModel):
+    """One persisted phrase evaluation for the session.
+
+    The client sends the prompt_id (from the catalog) plus the four
+    sub-scores Gemini returned during /evaluate. Ephemeral fields (feedback,
+    phoneme errors, text) stay out — they do not belong in the DB.
+    """
+
+    phrase_index: int = Field(ge=0)
+    prompt_id: UUID
+    vowel_score: int = Field(ge=0, le=100)
+    consonant_score: int = Field(ge=0, le=100)
+    fluency_score: int = Field(ge=0, le=100)
+    intelligibility_score: int = Field(ge=0, le=100)
+
+
+class PronunciationPhraseEvaluationOutput(BaseModel):
+    """Per-phrase row returned by the detail endpoint."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    phrase_index: int
+    prompt_id: UUID
+    prompt_text: str
+    prompt_difficulty: str
+    vowel_score: int
+    consonant_score: int
+    fluency_score: int
+    intelligibility_score: int
+
+
+class PronunciationWeakestPromptOutput(BaseModel):
+    """One row of the weakest-prompts insights endpoint."""
+
+    prompt_id: UUID
+    text: str
+    difficulty: str
+    avg_score: int = Field(ge=0, le=100)
+    practice_count: int = Field(ge=1)
+
+
 class PronunciationSessionCreate(BaseModel):
     started_at: datetime
     ended_at: datetime
     metrics: PronunciationMetricsInput
+    phrases: list[PronunciationPhraseEvaluationInput] = Field(default_factory=list)
     parent_id: UUID | None = None
 
     @model_validator(mode="after")
-    def validate_time_range(self) -> "PronunciationSessionCreate":
+    def validate_session_consistency(self) -> "PronunciationSessionCreate":
         if self.ended_at <= self.started_at:
             raise ValueError("ended_at must be greater than started_at")
+        if len(self.phrases) != self.metrics.phrases_count:
+            raise ValueError(
+                "metrics.phrases_count must equal the length of phrases"
+            )
+        indexes = [p.phrase_index for p in self.phrases]
+        if len(set(indexes)) != len(indexes):
+            raise ValueError("phrase_index must be unique within phrases")
+        for index in indexes:
+            if index >= self.metrics.phrases_count:
+                raise ValueError(
+                    "phrase_index must be < metrics.phrases_count"
+                )
         return self
 
 
