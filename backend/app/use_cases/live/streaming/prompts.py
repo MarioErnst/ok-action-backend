@@ -120,7 +120,18 @@ Devuelve en la seccion "pronunciation":
 - vowel_score (entero 0-100): calidad de vocales en el fragmento.
 - consonant_score (entero 0-100): calidad de consonantes en el fragmento.
 - fluency_score (entero 0-100): fluidez fonetica y transiciones.
-- intelligibility_score (entero 0-100): inteligibilidad general."""
+- intelligibility_score (entero 0-100): inteligibilidad general.
+- phoneme_errors: lista con UNA entrada por palabra del fragmento con un
+  error fonemico claro. Cada entrada es {phoneme, word, actual_issue,
+  suggestion} donde:
+    * phoneme: el fonema afectado (ej. "rr", "s", "ll", "d").
+    * word: la palabra del transcript donde ocurrio el error. DEBE
+      aparecer literalmente en `transcript`. Si no esta, omitela.
+    * actual_issue: una linea describiendo el problema observado.
+    * suggestion: una linea con la indicacion accionable.
+  Reporta solo errores claros y observables; si no hay errores fonemicos
+  evidentes en el fragmento, devuelve phoneme_errors: []. NUNCA inventes
+  errores."""
 
 
 _SECTION_BY_MODULE: dict[FrameModule, str] = {

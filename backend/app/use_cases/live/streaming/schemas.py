@@ -78,6 +78,21 @@ _FRAME_ACCENTUATION_SCHEMA = {
 }
 
 
+# Each phoneme error anchors to a word that must appear in the root
+# transcript. Frame responses use this to drive the per-word strike
+# counter and to render which words the user mispronounced live.
+_PHONEME_ERROR_ITEM = {
+    "type": "object",
+    "properties": {
+        "phoneme": {"type": "string"},
+        "word": {"type": "string"},
+        "actual_issue": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["phoneme", "word", "actual_issue", "suggestion"],
+}
+
+
 _FRAME_PRONUNCIATION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -85,12 +100,17 @@ _FRAME_PRONUNCIATION_SCHEMA = {
         "consonant_score": {"type": "integer"},
         "fluency_score": {"type": "integer"},
         "intelligibility_score": {"type": "integer"},
+        "phoneme_errors": {
+            "type": "array",
+            "items": _PHONEME_ERROR_ITEM,
+        },
     },
     "required": [
         "vowel_score",
         "consonant_score",
         "fluency_score",
         "intelligibility_score",
+        "phoneme_errors",
     ],
 }
 
