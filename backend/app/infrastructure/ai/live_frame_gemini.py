@@ -67,6 +67,11 @@ async def evaluate_frame_audio(
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=frame_schema,
+                    # Frames drive the strike counter, so detection drift
+                    # between consecutive frames produces visible spurious
+                    # strikes. Low temperature keeps the same audio scoring
+                    # consistently and reduces hallucinated error words.
+                    temperature=0.2,
                 ),
             ),
             timeout=timeout_s,
