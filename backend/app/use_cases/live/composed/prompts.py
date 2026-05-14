@@ -45,6 +45,12 @@ _GEMINI_EVALUATED_MODULES: tuple[ComposableModule, ...] = (
 )
 
 
+# Public alias used by the router to decide whether to invoke Gemini at
+# all. If a request only selects facial_expression there is nothing the
+# audio model can contribute and the endpoint can short-circuit the call.
+AUDIO_COMPOSABLE_MODULES: tuple[ComposableModule, ...] = _GEMINI_EVALUATED_MODULES
+
+
 _HEADER = """Eres un evaluador experto de comunicacion oral en espanol latinoamericano.
 Estas evaluando un audio de HABLA LIBRE de un estudiante en una sesion de practica.
 El estudiante NO esta leyendo una frase fija; esta hablando espontaneamente sobre un
