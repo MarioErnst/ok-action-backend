@@ -109,16 +109,21 @@ Devuelve en la seccion "accentuation":
 - intonation_score (entero 0-100): variacion tonal en el fragmento.
 - stress_score (entero 0-100): correccion de acentos prosodicos en las palabras.
 - prosodic_errors: lista con UNA entrada por palabra del fragmento con un
-  error prosodico claro. Cada entrada es {word, expected_stress,
+  error prosodico perceptible. Cada entrada es {word, expected_stress,
   actual_issue, suggestion} donde:
     * word: la palabra del transcript donde ocurrio el error. DEBE
-      aparecer literalmente en `transcript`. Si no esta, omitela.
+      aparecer literalmente en `transcript`; esa restriccion sigue firme
+      como contrato anti-alucinacion.
     * expected_stress: como debio acentuarse (ej. "PA-ja-ro" con la silaba
       tonica en mayusculas, o una indicacion breve de la curva esperada).
     * actual_issue: una linea describiendo como la pronuncio el estudiante.
     * suggestion: una linea con la indicacion accionable.
-  Reporta solo errores claros y observables; si no hay, devuelve
-  prosodic_errors: []. NUNCA inventes errores."""
+  IMPORTANTE: la sesion en vivo necesita feedback granular. Si percibis
+  CUALQUIER acento desplazado o entonacion no natural en una palabra del
+  transcript, repORTalo, aunque la severidad sea leve. Es mejor reportar
+  varios errores percibidos que ninguno. Solo se omite cuando la palabra
+  no aparece en el transcript. Si verdaderamente la prosodia es nativa,
+  devolve prosodic_errors: []."""
 
 
 _FRAME_PRONUNCIATION_SECTION = """MODULO PRONUNCIACION:
@@ -133,16 +138,22 @@ Devuelve en la seccion "pronunciation":
 - fluency_score (entero 0-100): fluidez fonetica y transiciones.
 - intelligibility_score (entero 0-100): inteligibilidad general.
 - phoneme_errors: lista con UNA entrada por palabra del fragmento con un
-  error fonemico claro. Cada entrada es {phoneme, word, actual_issue,
+  error fonemico perceptible. Cada entrada es {phoneme, word, actual_issue,
   suggestion} donde:
     * phoneme: el fonema afectado (ej. "rr", "s", "ll", "d").
     * word: la palabra del transcript donde ocurrio el error. DEBE
-      aparecer literalmente en `transcript`. Si no esta, omitela.
+      aparecer literalmente en `transcript`; esa restriccion sigue firme
+      como contrato anti-alucinacion.
     * actual_issue: una linea describiendo el problema observado.
     * suggestion: una linea con la indicacion accionable.
-  Reporta solo errores claros y observables; si no hay errores fonemicos
-  evidentes en el fragmento, devuelve phoneme_errors: []. NUNCA inventes
-  errores."""
+  IMPORTANTE: la sesion en vivo necesita feedback granular. Si percibis
+  CUALQUIER fonema mal articulado, debil o sustituido en una palabra del
+  transcript, repORTalo, aunque la severidad sea leve. Errores tipicos en
+  espanol latinoamericano que valen la pena reportar: /rr/ debil, /b/-/v/
+  sin distincion, /s/ aspirada o ceceada, /ll/-/y/ confundidas, /d/ final
+  caida, vocales nasalizadas. Es mejor reportar varios errores percibidos
+  que ninguno. Solo se omite cuando la palabra no aparece en el transcript.
+  Si verdaderamente todo sono nativo, devolve phoneme_errors: []."""
 
 
 _SECTION_BY_MODULE: dict[FrameModule, str] = {
