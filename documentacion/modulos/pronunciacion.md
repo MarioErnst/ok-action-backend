@@ -110,5 +110,5 @@ Todos requieren Bearer JWT.
 - **Composición en sesión live**: cuando se reescriba `live`, `create_pronunciation_session` debe aceptar `parent_id` opcional.
 - **Sesiones abortadas**: hoy solo `status='completed'`.
 - **Cache efímera de feedback Gemini**: igual que acentuación, hoy el feedback solo vive en la respuesta inmediata del `/evaluate`. Si se quiere mostrar después de la sesión: Redis con TTL.
-- **MIME allowlist unificada para evaluate endpoints**: refactor pendiente entre acentuación y pronunciación para validar con 415 en vez de fallback silencioso.
+- **MIME allowlist unificada**: implementada en `app/infrastructure/audio/mime.py` (ver `documentacion/audio-mime-allowlist.md`). El endpoint `/evaluate` ya rechaza con 415 cualquier `Content-Type` fuera de la allowlist en lugar del fallback silencioso a `audio/webm`.
 - **`level` como enum nativo**: si los niveles se vuelven catálogo cerrado, migrar a Postgres ENUM + `Literal` en Pydantic.

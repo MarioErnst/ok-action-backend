@@ -121,5 +121,5 @@ Todos los endpoints requieren Bearer JWT.
 
 - **Composición en sesión live**: `start_linguistic_versatility_session` debe aceptar `parent_id` opcional cuando lo invoque el orquestador del módulo `live`.
 - **Anti-repetición de prompts** (guided): el viejo código no excluía recientes; podría agregarse un join contra rounds del usuario en sesiones recientes. Defer mientras el catálogo sea pequeño.
-- **MIME allowlist unificada**: igual que precision/pronunciation/accentuation/muletillas.
+- **MIME allowlist unificada**: implementada en `app/infrastructure/audio/mime.py` (ver `documentacion/audio-mime-allowlist.md`). El endpoint de evaluación por ronda rechaza con 415 si el `Content-Type` no está en la allowlist.
 - **Cache efímera de feedback Gemini**: hoy solo vive en la respuesta inmediata.

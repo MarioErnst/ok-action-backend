@@ -139,4 +139,4 @@ Todos los endpoints requieren Bearer JWT.
 - **Sesiones abortadas**: hoy solo `status='completed'`.
 - **Migrar `EVALUATION_QUESTIONS` al catálogo `prompts`**: agregar seed + endpoint genérico de prompts. Hoy está hardcoded en `evaluate_response.py`.
 - **Cache efímera de feedback Gemini**: igual que pronunciación/acentuación, hoy el feedback solo vive en la respuesta inmediata del `/evaluate`.
-- **MIME allowlist unificada para evaluate endpoints**: refactor pendiente entre los 3 módulos con Gemini.
+- **MIME allowlist unificada**: implementada en `app/infrastructure/audio/mime.py` (ver `documentacion/audio-mime-allowlist.md`). El endpoint `/evaluate` rechaza con 415 cualquier `Content-Type` fuera de la allowlist.
