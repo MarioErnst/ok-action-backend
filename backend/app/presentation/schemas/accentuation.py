@@ -7,6 +7,20 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class AccentuationPhraseOutput(BaseModel):
+    """One prompt from the accentuation catalog.
+
+    `category` carries the sentence-type tag (declarative / interrogative /
+    exclamative) that the UI uses to badge each phrase.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    text: str
+    category: str
+
+
 # Per-phrase Gemini evaluation (ephemeral, never persisted)
 
 

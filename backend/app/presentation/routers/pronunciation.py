@@ -16,12 +16,14 @@ from app.presentation.schemas.pronunciation import (
     PhonemeError,
     PhraseEvaluation,
     PronunciationMetricsOutput,
+    PronunciationPhraseOutput,
     PronunciationSessionCreate,
     PronunciationSessionDetail,
     PronunciationSessionListItem,
 )
 from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.pronunciation.evaluate_phrase import evaluate_phrase
+from app.use_cases.pronunciation.prompts import list_phrases
 from app.use_cases.pronunciation.sessions import (
     create_pronunciation_session,
     get_pronunciation_session,
@@ -29,6 +31,22 @@ from app.use_cases.pronunciation.sessions import (
 )
 
 router = APIRouter(prefix="/pronunciation", tags=["pronunciation"])
+
+
+@router.get("/phrases", response_model=list[PronunciationPhraseOutput])
+async def list_phrases_endpoint(
+    level: str | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[PronunciationPhraseOutput]:
+    """List pronunciation phrases from the catalog, optionally filtered by level.
+
+    The frontend asks for the active level (basico / intermedio / avanzado)
+    via the `level` query param. Without it, returns the full catalog.
+    """
+
+    rows = await list_phrases(db, difficulty=level)
+    return [PronunciationPhraseOutput.model_validate(r) for r in rows]
 
 
 def _build_detail(

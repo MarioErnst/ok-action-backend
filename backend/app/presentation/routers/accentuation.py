@@ -14,6 +14,7 @@ from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.accentuation import (
     AccentuationMetricsOutput,
+    AccentuationPhraseOutput,
     AccentuationSessionCreate,
     AccentuationSessionDetail,
     AccentuationSessionListItem,
@@ -21,6 +22,7 @@ from app.presentation.schemas.accentuation import (
     PhraseSpecificError,
 )
 from app.use_cases.accentuation.evaluate_phrase import evaluate_phrase
+from app.use_cases.accentuation.prompts import list_phrases
 from app.use_cases.accentuation.sessions import (
     create_accentuation_session,
     get_accentuation_session,
@@ -29,6 +31,21 @@ from app.use_cases.accentuation.sessions import (
 from app.use_cases.live.sessions import InvalidParentLiveError
 
 router = APIRouter(prefix="/accentuation", tags=["accentuation"])
+
+
+@router.get("/phrases", response_model=list[AccentuationPhraseOutput])
+async def list_phrases_endpoint(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[AccentuationPhraseOutput]:
+    """List every active accentuation phrase from the catalog.
+
+    Replaces the frontend hardcoded list. Returns the prompt id so the
+    client can persist it per phrase when the session ends (B7).
+    """
+
+    rows = await list_phrases(db)
+    return [AccentuationPhraseOutput.model_validate(r) for r in rows]
 
 
 def _build_detail(

@@ -7,6 +7,21 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class PronunciationPhraseOutput(BaseModel):
+    """One prompt from the pronunciation catalog.
+
+    `difficulty` carries the level label (basico / intermedio / avanzado) the
+    UI uses to group phrases. The same value is sent back as `level` in
+    PronunciationMetricsInput when persisting a completed session.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    text: str
+    difficulty: str
+
+
 # Per-phrase Gemini evaluation (ephemeral, never persisted)
 
 
