@@ -281,24 +281,38 @@ literalmente en el `transcript` del frame. El listado de ejemplos de
 muletillas se redujo a `eh`, `este`, `o sea` con instrucción explícita de no
 reportar las demás clásicas salvo que estén textualmente en el transcript.
 
-### 12.4 Contrato de strike basado en palabras
+### 12.4 Contrato de strike basado en items (no-dedup, threshold 2)
 
 Importante: el strike counter del frontend cambia de "score parcial bajo" a
-"palabra única mal pronunciada / mal acentuada / muletilla". El backend no
-calcula strikes —los calcula `useFrameStrikes.ts` en el frontend— pero el
-schema del frame está diseñado para soportar este cambio:
+"items de error reportados por Gemini". El backend no calcula strikes —los
+calcula `useFrameStrikes.ts` en el frontend— pero el schema del frame está
+diseñado para soportar este flujo:
 
-- **Muletillas** (igual que antes): cada ocurrencia de `muletillas.detected[].count`
-  suma. Threshold 3 → stop.
-- **Pronunciación** (cambio): se cuentan `palabras únicas` que aparecen en
-  `pronunciation.phoneme_errors[].word` a lo largo de todos los frames de la
-  sesión. Misma palabra repetida en dos frames cuenta una sola vez (dedup por
-  forma normalizada: lowercase + trim + sin tildes). 3 palabras únicas → stop.
-- **Acentuación** (cambio): mismo criterio que pronunciación pero contra
-  `accentuation.prosodic_errors[].word`. 3 palabras únicas → stop.
+- **Muletillas**: cada ocurrencia (suma de `muletillas.detected[].count`)
+  suma al counter. Threshold 2 → stop.
+- **Pronunciación**: cada item en `pronunciation.phoneme_errors[]` suma 1
+  al counter. Sin deduplicación: si Gemini reporta la misma palabra mal
+  pronunciada en frames distintos, cada item cuenta. Threshold 2 → stop.
+- **Acentuación**: cada item en `accentuation.prosodic_errors[]` suma 1
+  al counter. Mismo no-dedup. Threshold 2 → stop.
+
+Los tres contadores son **independientes**: cualquiera que llegue a 2
+dispara el corte. 1 muletilla + 1 error de pronunciación NO detiene.
 
 Los sub-scores (`vowel_score`, `pronunciation_score`, etc.) **siguen llegando**
 en la respuesta y se promedian al cierre; lo que cambió es solo el disparador
 del strike counter. La pantalla de feedback de strike también pasa a renderizar
 palabra + detalle accionable en lugar del string genérico
 `Score parcial mínimo: X`.
+
+#### Por qué no-dedup
+
+Una variante intermedia (dedup por palabra normalizada con threshold 3) se
+implementó primero pero quedó demasiado permisiva: un usuario que repetía
+6 veces el mismo error fonémico solo acumulaba 1 strike. El no-dedup con
+threshold 2 da un solo "aviso" antes del corte, lo que en la práctica
+refleja mejor la intención pedagógica del strike system. Gemini ya tiende
+a agrupar errores repetidos del mismo fonema en una sola entrada de
+`phoneme_errors[]` cuando ocurren en un mismo frame, así que el counter
+no se dispara de forma absurda; sí se dispara cuando el error persiste
+entre frames distintos.
