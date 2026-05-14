@@ -316,3 +316,24 @@ a agrupar errores repetidos del mismo fonema en una sola entrada de
 `phoneme_errors[]` cuando ocurren en un mismo frame, así que el counter
 no se dispara de forma absurda; sí se dispara cuando el error persiste
 entre frames distintos.
+
+### 12.5 Saltar Gemini cuando solo se selecciona facial_expression
+
+`AUDIO_COMPOSABLE_MODULES` (alias público de `_GEMINI_EVALUATED_MODULES` en
+`composed/prompts.py`) lista los módulos que dependen del modelo de audio:
+`muletillas`, `accentuation`, `pronunciation`. El endpoint
+`POST /live/sessions/{id}/audio-evaluation` ahora hace un short-circuit:
+
+- Si la selección contiene al menos uno de esos módulos: lee el audio,
+  valida el MIME y llama a Gemini igual que antes.
+- Si la selección es **solo `facial_expression`**: salta la lectura del
+  audio, salta la llamada a Gemini, y construye una respuesta sintética
+  `{"audio_intelligible": True}`. `persist_composed_evaluation` ignora las
+  secciones audio y solo persiste `facial_expression_metrics` a partir
+  del `facial_summary` recibido en el body.
+
+Beneficios:
+- Cero tokens Gemini consumidos cuando el usuario practica solo expresión.
+- Latencia del cierre de sesión cae de ~3-15s (llamada Gemini) a <100ms.
+- Backend no exige que el audio sea inteligible (ni siquiera que tenga
+  contenido) cuando no se va a evaluar.
