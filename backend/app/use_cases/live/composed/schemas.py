@@ -37,15 +37,39 @@ _MULETILLAS_DETECTED_ITEM = {
 }
 
 
+# Each occurrence anchors to the root transcript via start_char (inclusive) +
+# end_char (exclusive). The prompt enforces transcript[start:end] == word so
+# Gemini cannot list a muletilla that is not in its own transcription.
+_MULETILLAS_POSITION_ITEM = {
+    "type": "object",
+    "properties": {
+        "word": {"type": "string"},
+        "start_char": {"type": "integer"},
+        "end_char": {"type": "integer"},
+    },
+    "required": ["word", "start_char", "end_char"],
+}
+
+
 _MULETILLAS_SECTION_SCHEMA = {
     "type": "object",
     "properties": {
         "fluency_score": {"type": "integer"},
         "total_muletillas": {"type": "integer"},
         "detected": {"type": "array", "items": _MULETILLAS_DETECTED_ITEM},
+        "muletillas_positions": {
+            "type": "array",
+            "items": _MULETILLAS_POSITION_ITEM,
+        },
         "feedback": {"type": "string"},
     },
-    "required": ["fluency_score", "total_muletillas", "detected", "feedback"],
+    "required": [
+        "fluency_score",
+        "total_muletillas",
+        "detected",
+        "muletillas_positions",
+        "feedback",
+    ],
 }
 
 
@@ -119,6 +143,13 @@ def build_composed_schema(modules: list[ComposableModule]) -> dict[str, Any]:
 
     properties: dict[str, Any] = {"audio_intelligible": {"type": "boolean"}}
     required: list[str] = ["audio_intelligible"]
+
+    # Transcript lives at the root because every audio module that returns
+    # anchored items references the same transcription. Required as soon as
+    # any audio module is selected — without it the per-module anchoring
+    # contract cannot hold.
+    properties["transcript"] = {"type": "string"}
+    required.append("transcript")
 
     for module in audio_modules:
         properties[module] = _SCHEMA_BY_MODULE[module]

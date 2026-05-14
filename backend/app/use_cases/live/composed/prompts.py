@@ -72,6 +72,19 @@ Solo si hay un intento claro de habla libre con duracion suficiente, procede con
 la evaluacion completa de cada modulo seleccionado."""
 
 
+_TRANSCRIPT_REQUIREMENT = """PASO 2 - TRANSCRIPCION LITERAL (REGLA ANTI-ALUCINACION):
+Antes de evaluar cualquier modulo, transcribe palabra por palabra lo que el estudiante
+dice en el audio y devuelvelo en el campo `transcript` del JSON raiz. Usa minusculas y
+puntuacion natural. Si no estas seguro de una palabra, escribe lo que sonó mas cercano
+o usa [inaudible].
+
+ESTA TRANSCRIPCION ES UN CONTRATO. Cada modulo que reporte items anclados (muletillas,
+errores fonemicos, errores prosodicos) DEBE referirse a palabras o segmentos que
+aparezcan literalmente en `transcript`. Si una palabra no aparece en `transcript`, NO
+puedes reportarla como muletilla, error fonemico ni error prosodico. Prefiere reportar
+menos antes que inventar."""
+
+
 _CONSIGNA_TEMPLATE = """CONSIGNA DEL USUARIO PARA LA SESION:
 {consigna}
 
@@ -80,20 +93,25 @@ literal a la consigna."""
 
 
 _MULETILLAS_SECTION = """MODULO MULETILLAS:
-Detecta palabras de relleno (muletillas) en el habla libre. Considera muletillas
-como "o sea", "este", "eh", "um", "ah", "basicamente", "literalmente",
-"obviamente", "la verdad", "de hecho", "como que", "pues", "bueno", repeticiones
-sin sentido semantico, y cualquier patron de relleno recurrente.
+Detecta palabras de relleno (muletillas) que aparezcan LITERALMENTE en `transcript`.
+Ejemplos clasicos a considerar SOLO si estan en el transcript: "eh", "este", "o sea".
+NO reportes muletillas tipicas ("la verdad", "de hecho", "obviamente", "basicamente",
+etc.) salvo que tu transcripcion las contenga textualmente.
 
-Severidad por palabra:
+Severidad por palabra (basada en ocurrencias en el transcript):
 - "high" si aparece 3 o mas veces
 - "medium" si aparece 2 veces
 - "low" si aparece 1 vez
 
 Devuelve en la seccion "muletillas" del JSON:
 - fluency_score (entero 0-100): fluidez global del discurso, descontando muletillas y rellenos.
-- total_muletillas (entero): cantidad total de muletillas detectadas en el audio.
+- total_muletillas (entero): cantidad total de ocurrencias de muletillas en el transcript.
 - detected: lista de objetos {word, count, severity, suggestion} con cada muletilla unica.
+- muletillas_positions: lista con una entrada por cada ocurrencia individual de muletilla,
+  ordenadas como aparecen en el transcript. Cada entrada es {word, start_char, end_char}
+  donde `transcript[start_char:end_char]` DEBE devolver exactamente la muletilla
+  (start_char inclusivo, end_char exclusivo, indices 0-based sobre el campo `transcript`).
+  Si una muletilla aparece N veces, debe haber N entradas en muletillas_positions.
 - feedback (string en espanol): retroalimentacion breve y constructiva, minimo 2 oraciones."""
 
 
@@ -169,6 +187,7 @@ def build_composed_prompt(
         # Caller asked only for facial_expression (or nothing prompt-shaped).
         # We still need a sane prompt for Gemini to gate audio intelligibility
         # against, so we ask only for audio_intelligible without any module section.
+        # Transcript is also unnecessary when no audio module needs anchoring.
         parts: list[str] = [
             _HEADER,
             _AUDIO_GATE,
@@ -177,13 +196,13 @@ def build_composed_prompt(
         ]
         return "\n\n".join(parts)
 
-    parts = [_HEADER, _AUDIO_GATE]
+    parts = [_HEADER, _AUDIO_GATE, _TRANSCRIPT_REQUIREMENT]
 
     consigna = (prompt_text or "").strip()
     if consigna:
         parts.append(_CONSIGNA_TEMPLATE.format(consigna=consigna))
 
-    parts.append("PASO 2 - EVALUACION POR MODULO:")
+    parts.append("PASO 3 - EVALUACION POR MODULO:")
     for module in audio_modules:
         parts.append(_SECTION_BY_MODULE[module])
 
