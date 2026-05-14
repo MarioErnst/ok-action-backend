@@ -101,9 +101,9 @@ El `transcript` y `muletillas_positions` permiten al frontend renderizar la tran
 2. Si el detector falla → loggea warning y procede a Gemini.
 3. Llama a `GeminiMuletillasService.evaluate_response` y retorna el dict.
 
-### `get_random_question()` — `evaluate_response.py`
+### `get_random_question(db)` — `evaluate_response.py`
 
-Retorna pregunta aleatoria del catálogo hardcoded `EVALUATION_QUESTIONS`. Pendiente: migrar al catálogo unificado `prompts` filtrado por `module='muletillas'`.
+Devuelve una pregunta aleatoria del catálogo `prompts` filtrando por `module='muletillas'` e `is_active=True`. La selección se hace con `ORDER BY random() LIMIT 1` en Postgres (eficiente incluso con catálogos grandes). Si la query no devuelve nada, lanza `NoMuletillasPromptsError` y el router responde 503 (típicamente significa que el seed no se corrió en ese entorno).
 
 ### `_normalize_word(word)` — `sessions.py`
 
@@ -125,7 +125,7 @@ Detalle con palabras ordenadas alfabéticamente. Retorna `None` para no-encontra
 
 ## 6. Endpoints
 
-- `GET /muletillas/questions/random` → 200, `{question}`. Hardcoded por ahora.
+- `GET /muletillas/questions/random` → 200, `{question}` / 503 si el catálogo está vacío. Backeado por el catálogo `prompts`.
 - `POST /muletillas/evaluate` — multipart con `audio`, `question_text` (Form). Retorna `MuletillasEvaluationResponse`. 502 si Gemini falla.
 - `POST /muletillas/sessions` → 201 / 422 (incluye 422 por palabra duplicada tras normalización).
 - `GET /muletillas/sessions` → 200, lista standalone ordenada por `started_at DESC`.
@@ -137,6 +137,6 @@ Todos los endpoints requieren Bearer JWT.
 
 - **Composición en sesión live**: cuando se reescriba `live`, `create_muletillas_session` debe aceptar `parent_id` opcional.
 - **Sesiones abortadas**: hoy solo `status='completed'`.
-- **Migrar `EVALUATION_QUESTIONS` al catálogo `prompts`**: agregar seed + endpoint genérico de prompts. Hoy está hardcoded en `evaluate_response.py`.
+- **Migración al catálogo `prompts`**: completada. Las preguntas ahora viven en la tabla `prompts` con `module='muletillas'` y se seedean en `app/infrastructure/db/seed.py` vía `_seed_muletillas_prompts`. La lista hardcoded `EVALUATION_QUESTIONS` fue eliminada del use_case.
 - **Cache efímera de feedback Gemini**: igual que pronunciación/acentuación, hoy el feedback solo vive en la respuesta inmediata del `/evaluate`.
 - **MIME allowlist unificada**: implementada en `app/infrastructure/audio/mime.py` (ver `documentacion/audio-mime-allowlist.md`). El endpoint `/evaluate` rechaza con 415 cualquier `Content-Type` fuera de la allowlist.
