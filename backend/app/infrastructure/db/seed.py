@@ -132,6 +132,47 @@ def _seed_precision_prompts(session: OrmSession) -> None:
             print(f"Precision prompt already exists: '{text[:50]}...'")
 
 
+def _seed_muletillas_prompts(session: OrmSession) -> None:
+    """Seed open-ended questions for the muletillas module.
+
+    The questions invite the user to answer freely so Gemini can detect
+    filler words. Idempotent on (module, text). Replaces the previous
+    hardcoded EVALUATION_QUESTIONS list inside the use_case.
+    """
+
+    prompts = [
+        "Cuéntame sobre tu día de hoy.",
+        "Describe tu lugar de trabajo o estudio.",
+        "Explica en qué consiste tu pasatiempo favorito.",
+        "Habla sobre una película o libro que hayas disfrutado recientemente.",
+        "Describe un momento importante en tu vida.",
+        "¿Qué te motiva a mejorar tu comunicación oral?",
+        "Habla sobre alguien que admiras y por qué.",
+        "Describe el lugar donde creciste.",
+    ]
+    for text in prompts:
+        existing = session.execute(
+            select(Prompt).where(
+                Prompt.module == ModuleEnum.muletillas,
+                Prompt.text == text,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                Prompt(
+                    module=ModuleEnum.muletillas,
+                    text=text,
+                    category="general",
+                    difficulty="basic",
+                    language="es",
+                    is_active=True,
+                )
+            )
+            print(f"Muletillas prompt seeded: '{text[:50]}...'")
+        else:
+            print(f"Muletillas prompt already exists: '{text[:50]}...'")
+
+
 def _seed_linguistic_versatility_prompts(session: OrmSession) -> None:
     """Seed open-ended questions for linguistic_versatility (guided mode).
 
@@ -206,6 +247,7 @@ def seed() -> None:
         _seed_loudness_presets(session)
         _seed_precision_prompts(session)
         _seed_linguistic_versatility_prompts(session)
+        _seed_muletillas_prompts(session)
         _seed_dev_user(session, role)
         session.commit()
         print("Seed completed")
