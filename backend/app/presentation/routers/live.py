@@ -21,6 +21,7 @@ from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.ai.composed_live_gemini import evaluate_composed_audio
 from app.infrastructure.ai.live_frame_gemini import evaluate_frame_audio
+from app.infrastructure.audio.mime import verify_audio_mime
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.live import (
@@ -249,13 +250,13 @@ async def evaluate_audio_endpoint(
             detail=str(exc),
         )
 
+    mime_type = verify_audio_mime(audio)
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Audio is empty",
         )
-    mime_type = audio.content_type or "audio/webm"
 
     gemini_response = await evaluate_composed_audio(
         audio_bytes=audio_bytes,
@@ -398,13 +399,13 @@ async def evaluate_frame_endpoint(
             detail=str(exc),
         )
 
+    mime_type = verify_audio_mime(audio)
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Audio frame is empty",
         )
-    mime_type = audio.content_type or "audio/webm"
 
     parsed = await evaluate_frame_audio(
         audio_bytes=audio_bytes,

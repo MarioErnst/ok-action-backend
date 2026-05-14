@@ -31,6 +31,7 @@ from app.infrastructure.ai.linguistic_versatility_gemini import (
     GeminiVersatilityService,
     VersatilityGeminiError,
 )
+from app.infrastructure.audio.mime import verify_audio_mime
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.linguistic_versatility import (
@@ -143,8 +144,8 @@ async def evaluate_round_endpoint(
     pairing as an invariant.
     """
 
+    mime_type = verify_audio_mime(audio)
     audio_bytes = await audio.read()
-    mime_type = audio.content_type or "audio/webm"
 
     # Look up the session mode up front so a guided/free pairing mismatch
     # fails with 422 before we burn a Gemini call. The use_case re-validates

@@ -10,6 +10,7 @@ from app.domain.entities.muletillas_word_usage import MuletillasWordUsage
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.ai.muletillas_gemini import GeminiMuletillasError
+from app.infrastructure.audio.mime import verify_audio_mime
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.muletillas import (
@@ -83,8 +84,8 @@ async def evaluate_endpoint(
     it to the DB via /sessions.
     """
 
+    mime_type = verify_audio_mime(audio)
     audio_bytes = await audio.read()
-    mime_type = audio.content_type or "audio/webm"
 
     try:
         evaluation = await evaluate_response(audio_bytes, mime_type, question_text)

@@ -9,6 +9,7 @@ from app.domain.entities.pronunciation_metrics import PronunciationMetrics
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.ai.pronunciation_gemini import GeminiPronunciationError
+from app.infrastructure.audio.mime import verify_audio_mime
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.pronunciation import (
@@ -62,8 +63,8 @@ async def evaluate_phrase_endpoint(
     the session's aggregated metrics.
     """
 
+    mime_type = verify_audio_mime(audio)
     audio_bytes = await audio.read()
-    mime_type = audio.content_type or "audio/webm"
 
     try:
         evaluation = await evaluate_phrase(audio_bytes, mime_type, phrase_text, level)
