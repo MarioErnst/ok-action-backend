@@ -86,6 +86,7 @@ async def create_loudness_session(
         high_pct=payload.metrics.high_pct,
         clipping_pct=payload.metrics.clipping_pct,
         peak_db=payload.metrics.peak_db,
+        noise_floor_db=payload.metrics.noise_floor_db,
     )
     db.add(metrics_row)
 

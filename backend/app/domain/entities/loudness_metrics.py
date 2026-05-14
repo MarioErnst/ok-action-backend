@@ -25,6 +25,13 @@ class LoudnessMetrics(Base):
     high_pct: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     clipping_pct: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     peak_db: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    # Ambient noise floor measured by a short pre-session calibration window
+    # on the client. Used by the frontend to render an absolute reference for
+    # the bands and by analytics to compare sessions across mics/environments.
+    # NULL on rows persisted before the calibration UX rolled out.
+    noise_floor_db: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 2), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint("optimal_pct BETWEEN 0 AND 100", name="ck_loudness_optimal_pct"),

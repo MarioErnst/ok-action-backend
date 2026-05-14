@@ -10,6 +10,7 @@ from app.domain.entities.muletillas_word_usage import MuletillasWordUsage
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.infrastructure.ai.muletillas_gemini import GeminiMuletillasError
+from app.infrastructure.audio.mime import verify_audio_mime
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.muletillas import (
@@ -24,6 +25,7 @@ from app.presentation.schemas.muletillas import (
 )
 from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.muletillas.evaluate_response import (
+    NoMuletillasPromptsError,
     evaluate_response,
     get_random_question,
 )
@@ -59,14 +61,21 @@ def _build_detail(
 @router.get("/questions/random", response_model=RandomQuestionResponse)
 async def get_random_question_endpoint(
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
 ) -> RandomQuestionResponse:
-    """Return a random open-ended question.
+    """Return a random open-ended question from the prompts catalog.
 
-    Currently backed by a hardcoded list in the use_case; migration to the
-    unified prompts catalog (with module='muletillas') is pending.
+    Returns 503 if the catalog has no active muletillas prompts, which
+    typically means the seed has not been run on this environment.
     """
 
-    return RandomQuestionResponse(question=get_random_question())
+    try:
+        question = await get_random_question(db)
+    except NoMuletillasPromptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
+    return RandomQuestionResponse(question=question)
 
 
 @router.post("/evaluate", response_model=MuletillasEvaluationResponse)
@@ -83,8 +92,8 @@ async def evaluate_endpoint(
     it to the DB via /sessions.
     """
 
+    mime_type = verify_audio_mime(audio)
     audio_bytes = await audio.read()
-    mime_type = audio.content_type or "audio/webm"
 
     try:
         evaluation = await evaluate_response(audio_bytes, mime_type, question_text)

@@ -12,6 +12,7 @@ class PauseMetricsInput(BaseModel):
     total_pause_ms: int = Field(ge=0)
     longest_pause_ms: int = Field(ge=0)
     silence_pct: int = Field(ge=0, le=100)
+    prompt_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_internal_consistency(self) -> "PauseMetricsInput":
@@ -34,6 +35,14 @@ class PauseMetricsOutput(BaseModel):
     total_pause_ms: int
     longest_pause_ms: int
     silence_pct: int
+    prompt_id: UUID | None = None
+
+
+class PausePromptOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    text: str
 
 
 class PauseSessionCreate(BaseModel):

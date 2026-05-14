@@ -61,11 +61,13 @@ Métricas agregadas de la sesión.
 | `high_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % del tiempo en banda alta. |
 | `clipping_pct` | SMALLINT | NOT NULL, CHECK 0-100 | % del tiempo en clipping. |
 | `peak_db` | NUMERIC(8,2) | NOT NULL | dB pico de la sesión. |
+| `noise_floor_db` | NUMERIC(8,2) | NULL | dB de piso de ruido medidos por la calibración inicial del frontend (migración 0008, B4). NULL en filas previas a la calibración. |
 
 CHECK adicional: `optimal_pct + low_pct + high_pct + clipping_pct = 100`.
 
 ### Decisiones de diseño
 
+- **`noise_floor_db` opcional (B4)**: el frontend mide el piso de ruido ambiente durante 3 segundos al inicio de cada sesión y lo envía con el payload. Sirve para (a) que la UI muestre una referencia absoluta en el medidor en lugar de offsets relativos al preset, y (b) que el análisis longitudinal compare sesiones entre micrófonos o entornos distintos (un usuario con mic ruidoso vs. otro con headset). Es NULLABLE porque las sesiones previas al rollout no lo tienen.
 - **`band_time_ms JSONB` reemplazado por 4 columnas `_pct`**: el JSONB del esquema viejo no era queryable longitudinalmente. Cuatro SMALLINT con CHECK de suma=100 capturan la misma información de forma estructurada.
 - **`score` se deriva en backend = `metrics.optimal_pct`**. Diferencia explícita con phonation: ahí el score es una fórmula compuesta multi-ejercicio que vive en frontend; aquí el score es literalmente el `optimal_pct`. Derivar en backend evita que cliente mande dos valores que pueden quedar desincronizados (mismo principio que `duration_ms`). **Convención general**: si la fórmula del score es trivial y única, derívalo en backend; si es compuesta y subjetiva, recíbelo del cliente.
 - **`too_low_offset_db` → `low_offset_db`** y **`clip_threshold_dbfs` → `clip_threshold_db`**: nombres alineados con el resto del schema (sufijo `_db` consistente, sin abreviaciones tipo "dbfs").
