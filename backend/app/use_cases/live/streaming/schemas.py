@@ -33,13 +33,31 @@ _MULETILLAS_DETECTED_ITEM = {
 }
 
 
+# Mirror of the composed schema position item. Anchored to the root
+# transcript so the strike feedback can render the filler highlighted on
+# top of the fragment text.
+_MULETILLAS_POSITION_ITEM = {
+    "type": "object",
+    "properties": {
+        "word": {"type": "string"},
+        "start_char": {"type": "integer"},
+        "end_char": {"type": "integer"},
+    },
+    "required": ["word", "start_char", "end_char"],
+}
+
+
 _FRAME_MULETILLAS_SCHEMA = {
     "type": "object",
     "properties": {
         "total": {"type": "integer"},
         "detected": {"type": "array", "items": _MULETILLAS_DETECTED_ITEM},
+        "muletillas_positions": {
+            "type": "array",
+            "items": _MULETILLAS_POSITION_ITEM,
+        },
     },
-    "required": ["total", "detected"],
+    "required": ["total", "detected", "muletillas_positions"],
 }
 
 
@@ -103,8 +121,12 @@ def build_frame_schema(modules: list[FrameModule]) -> dict[str, Any]:
 
     properties: dict[str, Any] = {
         "evaluated_until_seconds": {"type": "integer"},
+        # Required so every module that returns anchored items (muletillas
+        # positions, phoneme errors, prosodic errors) can verify against the
+        # same source-of-truth transcription instead of inventing words.
+        "transcript": {"type": "string"},
     }
-    required: list[str] = ["evaluated_until_seconds"]
+    required: list[str] = ["evaluated_until_seconds", "transcript"]
 
     for module in ordered_unique:
         properties[module] = _SCHEMA_BY_MODULE[module]

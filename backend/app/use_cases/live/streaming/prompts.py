@@ -55,16 +55,29 @@ C) Si el fragmento es muy corto, muy silencioso o ininteligible, devuelve scores
 50 (neutro) y listas "detected" vacias. NO devuelvas scores 0 salvo que haya
 silencio absoluto en todo el fragmento.
 
-D) No incluyas campos de texto libre (feedback, sugerencias). Devuelve solo los
-datos numericos y las listas pedidas."""
+D) Las sugerencias accionables (campos `suggestion`, `expected_stress`,
+`actual_issue`) deben ser breves (una linea, en espanol latinoamericano). Estos
+no son feedback libre: son indicaciones puntuales para cada error detectado y se
+muestran al usuario inmediatamente cuando el fragmento es evaluado."""
+
+
+_FRAME_TRANSCRIPT_REQUIREMENT = """REGLA ANTI-ALUCINACION PARA EL FRAGMENTO:
+Antes de evaluar cualquier modulo, transcribe palabra por palabra lo que escuchaste
+en el fragmento y devuelvelo en el campo `transcript` del JSON raiz. Usa minusculas
+y puntuacion natural. Si no estas seguro de una palabra, escribe lo mas cercano que
+oiste o usa [inaudible].
+
+ESTA TRANSCRIPCION ES UN CONTRATO. Cada item anclado que reportes (muletilla,
+error fonemico, error prosodico) DEBE referirse a una palabra o segmento que
+aparezca literalmente en `transcript`. Si la palabra no aparece en `transcript`,
+NO puedes reportarla. Prefiere reportar menos antes que inventar."""
 
 
 _FRAME_MULETILLAS_SECTION = """MODULO MULETILLAS:
-Detecta muletillas en este fragmento. Considera las habituales en espanol
-latinoamericano: "o sea", "este", "eh", "um", "ah", "basicamente",
-"literalmente", "obviamente", "la verdad", "de hecho", "como que", "pues",
-"bueno", "tipo", "viste", "po", "cachai", repeticiones sin sentido semantico,
-y cualquier patron de relleno recurrente.
+Detecta muletillas que aparezcan LITERALMENTE en `transcript`. Ejemplos clasicos
+a considerar SOLO si estan en transcript: "eh", "este", "o sea". NO reportes
+otras muletillas habituales ("la verdad", "de hecho", "obviamente", "basicamente",
+etc.) salvo que tu transcripcion las contenga textualmente.
 
 Severidad por palabra unica en el fragmento:
 - "high" si aparece 3 o mas veces
@@ -76,7 +89,12 @@ Devuelve en la seccion "muletillas":
 - detected: lista de objetos {word, count, severity, timestamp_ms} donde
   timestamp_ms es el milisegundo relativo al inicio del fragmento en que
   aparece la primera ocurrencia de esa palabra. Si no detectaste muletillas,
-  devuelve detected: [] y total: 0."""
+  devuelve detected: [] y total: 0.
+- muletillas_positions: lista con una entrada por cada ocurrencia individual
+  de muletilla, ordenadas como aparecen en `transcript`. Cada entrada es
+  {word, start_char, end_char} donde `transcript[start_char:end_char]` DEBE
+  devolver exactamente la muletilla (start_char inclusivo, end_char exclusivo,
+  indices 0-based)."""
 
 
 _FRAME_ACCENTUATION_SECTION = """MODULO ACENTUACION:
@@ -138,7 +156,7 @@ def build_frame_prompt(
 
     ordered_unique: list[FrameModule] = [m for m in VALID_FRAME_MODULES if m in modules]
 
-    parts: list[str] = [_HEADER, _FRAME_INSTRUCTIONS]
+    parts: list[str] = [_HEADER, _FRAME_INSTRUCTIONS, _FRAME_TRANSCRIPT_REQUIREMENT]
 
     if evaluated_so_far_seconds is not None and evaluated_so_far_seconds >= 0:
         parts.append(
