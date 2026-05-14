@@ -247,3 +247,58 @@ en el campo `feedback`.
   fonémicos y errores prosódicos están anclados a palabras del transcript. El
   frontend puede mostrar al usuario qué se transcribió y dónde estuvieron los
   errores, permitiéndole verificar contra el audio real.
+
+## 12. Hotfix de grounding en la evaluación por frame
+
+La sección 11 explica el cambio en el composed (cierre de sesión). Esta sección
+documenta el cambio paralelo en el flujo por frame (durante la sesión), que es
+el que alimenta el strike counter.
+
+### 12.1 Frame Gemini con `temperature=0.2`
+
+`live_frame_gemini.py` ahora setea `temperature=0.2` en `GenerateContentConfig`.
+Lo mismo que en el composed: el frame es una tarea de detección/clasificación,
+y la variabilidad en defaults rompe la estabilidad del strike counter (un mismo
+audio podía sumar 1 strike en una corrida y 0 en la siguiente).
+
+### 12.2 Campos nuevos en el schema del frame
+
+| Campo | Ubicación | Forma |
+|---|---|---|
+| `transcript` | raíz del JSON | string. Requerido cuando hay al menos un módulo seleccionado. |
+| `muletillas.muletillas_positions[]` | sección muletillas | `{word, start_char, end_char}`, una entrada por ocurrencia, ancladas a `transcript`. |
+| `accentuation.prosodic_errors[]` | sección acentuación | `{word, expected_stress, actual_issue, suggestion}`. `word` debe aparecer literalmente en `transcript`. |
+| `pronunciation.phoneme_errors[]` | sección pronunciación | `{phoneme, word, actual_issue, suggestion}`. `word` debe aparecer literalmente en `transcript`. |
+
+Todos efímeros: viajan en la respuesta HTTP del frame y no se persisten (las
+filas de frame jamás se persisten en BD, regla del módulo).
+
+### 12.3 Anti-alucinación
+
+Mismo contrato que el composed: el prompt obliga a transcribir antes de
+evaluar y declara que cualquier `word` reportada como error debe aparecer
+literalmente en el `transcript` del frame. El listado de ejemplos de
+muletillas se redujo a `eh`, `este`, `o sea` con instrucción explícita de no
+reportar las demás clásicas salvo que estén textualmente en el transcript.
+
+### 12.4 Contrato de strike basado en palabras
+
+Importante: el strike counter del frontend cambia de "score parcial bajo" a
+"palabra única mal pronunciada / mal acentuada / muletilla". El backend no
+calcula strikes —los calcula `useFrameStrikes.ts` en el frontend— pero el
+schema del frame está diseñado para soportar este cambio:
+
+- **Muletillas** (igual que antes): cada ocurrencia de `muletillas.detected[].count`
+  suma. Threshold 3 → stop.
+- **Pronunciación** (cambio): se cuentan `palabras únicas` que aparecen en
+  `pronunciation.phoneme_errors[].word` a lo largo de todos los frames de la
+  sesión. Misma palabra repetida en dos frames cuenta una sola vez (dedup por
+  forma normalizada: lowercase + trim + sin tildes). 3 palabras únicas → stop.
+- **Acentuación** (cambio): mismo criterio que pronunciación pero contra
+  `accentuation.prosodic_errors[].word`. 3 palabras únicas → stop.
+
+Los sub-scores (`vowel_score`, `pronunciation_score`, etc.) **siguen llegando**
+en la respuesta y se promedian al cierre; lo que cambió es solo el disparador
+del strike counter. La pantalla de feedback de strike también pasa a renderizar
+palabra + detalle accionable en lugar del string genérico
+`Score parcial mínimo: X`.
