@@ -127,6 +127,17 @@ Devuelve en la seccion "accentuation" del JSON:
 - rhythm_score (entero 0-100): cadencia y ritmo natural del habla.
 - intonation_score (entero 0-100): variacion tonal y curva melodica.
 - stress_score (entero 0-100): correccion de los acentos prosodicos en las palabras producidas.
+- prosodic_errors: lista de errores prosodicos accionables. Cada error es
+  {word, expected_stress, actual_issue, suggestion} donde:
+    * word: la palabra del transcript donde ocurrio el error de acentuacion
+      o entonacion. DEBE aparecer literalmente en `transcript`. Si la
+      palabra no esta en transcript, no reportes este error.
+    * expected_stress: como debio acentuarse o entonarse esa palabra (por
+      ejemplo, "PA-ja-ro" indicando la silaba tonica esperada en mayusculas,
+      o una descripcion breve de la curva melodica correcta).
+    * actual_issue: descripcion breve de como la pronuncio el estudiante.
+    * suggestion: indicacion accionable para corregirlo.
+  Si no hay errores claros, devuelve una lista vacia. NUNCA inventes errores.
 - feedback (string en espanol): retroalimentacion concreta sobre acentuacion en habla libre, minimo 2 oraciones."""
 
 

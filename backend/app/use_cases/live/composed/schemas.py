@@ -73,6 +73,21 @@ _MULETILLAS_SECTION_SCHEMA = {
 }
 
 
+# Each prosodic error anchors to a word that must appear in the root
+# transcript. Backend does not persist these; they travel in the HTTP
+# response for the UI and enforce Gemini's anti-hallucination contract.
+_PROSODIC_ERROR_ITEM = {
+    "type": "object",
+    "properties": {
+        "word": {"type": "string"},
+        "expected_stress": {"type": "string"},
+        "actual_issue": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["word", "expected_stress", "actual_issue", "suggestion"],
+}
+
+
 _ACCENTUATION_SECTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -80,6 +95,10 @@ _ACCENTUATION_SECTION_SCHEMA = {
         "rhythm_score": {"type": "integer"},
         "intonation_score": {"type": "integer"},
         "stress_score": {"type": "integer"},
+        "prosodic_errors": {
+            "type": "array",
+            "items": _PROSODIC_ERROR_ITEM,
+        },
         "feedback": {"type": "string"},
     },
     "required": [
@@ -87,6 +106,7 @@ _ACCENTUATION_SECTION_SCHEMA = {
         "rhythm_score",
         "intonation_score",
         "stress_score",
+        "prosodic_errors",
         "feedback",
     ],
 }
