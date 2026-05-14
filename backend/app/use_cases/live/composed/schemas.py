@@ -37,15 +37,54 @@ _MULETILLAS_DETECTED_ITEM = {
 }
 
 
+# Each occurrence anchors to the root transcript via start_char (inclusive) +
+# end_char (exclusive). The prompt enforces transcript[start:end] == word so
+# Gemini cannot list a muletilla that is not in its own transcription.
+_MULETILLAS_POSITION_ITEM = {
+    "type": "object",
+    "properties": {
+        "word": {"type": "string"},
+        "start_char": {"type": "integer"},
+        "end_char": {"type": "integer"},
+    },
+    "required": ["word", "start_char", "end_char"],
+}
+
+
 _MULETILLAS_SECTION_SCHEMA = {
     "type": "object",
     "properties": {
         "fluency_score": {"type": "integer"},
         "total_muletillas": {"type": "integer"},
         "detected": {"type": "array", "items": _MULETILLAS_DETECTED_ITEM},
+        "muletillas_positions": {
+            "type": "array",
+            "items": _MULETILLAS_POSITION_ITEM,
+        },
         "feedback": {"type": "string"},
     },
-    "required": ["fluency_score", "total_muletillas", "detected", "feedback"],
+    "required": [
+        "fluency_score",
+        "total_muletillas",
+        "detected",
+        "muletillas_positions",
+        "feedback",
+    ],
+}
+
+
+# Each prosodic error anchors to a word that must appear in the root
+# transcript. Backend does not persist these; they travel in the HTTP
+# response for the UI and enforce Gemini's anti-hallucination contract.
+_PROSODIC_ERROR_ITEM = {
+    "type": "object",
+    "properties": {
+        "word": {"type": "string"},
+        "expected_stress": {"type": "string"},
+        "actual_issue": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["word", "expected_stress", "actual_issue", "suggestion"],
 }
 
 
@@ -56,6 +95,10 @@ _ACCENTUATION_SECTION_SCHEMA = {
         "rhythm_score": {"type": "integer"},
         "intonation_score": {"type": "integer"},
         "stress_score": {"type": "integer"},
+        "prosodic_errors": {
+            "type": "array",
+            "items": _PROSODIC_ERROR_ITEM,
+        },
         "feedback": {"type": "string"},
     },
     "required": [
@@ -63,8 +106,24 @@ _ACCENTUATION_SECTION_SCHEMA = {
         "rhythm_score",
         "intonation_score",
         "stress_score",
+        "prosodic_errors",
         "feedback",
     ],
+}
+
+
+# Each phoneme error anchors to a word that must appear in the root
+# transcript. Backend does not persist this list; it travels in the HTTP
+# response for the UI and to enforce Gemini's anti-hallucination contract.
+_PHONEME_ERROR_ITEM = {
+    "type": "object",
+    "properties": {
+        "phoneme": {"type": "string"},
+        "word": {"type": "string"},
+        "actual_issue": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["phoneme", "word", "actual_issue", "suggestion"],
 }
 
 
@@ -75,6 +134,10 @@ _PRONUNCIATION_SECTION_SCHEMA = {
         "consonant_score": {"type": "integer"},
         "fluency_score": {"type": "integer"},
         "intelligibility_score": {"type": "integer"},
+        "phoneme_errors": {
+            "type": "array",
+            "items": _PHONEME_ERROR_ITEM,
+        },
         "feedback": {"type": "string"},
     },
     "required": [
@@ -82,6 +145,7 @@ _PRONUNCIATION_SECTION_SCHEMA = {
         "consonant_score",
         "fluency_score",
         "intelligibility_score",
+        "phoneme_errors",
         "feedback",
     ],
 }
@@ -119,6 +183,13 @@ def build_composed_schema(modules: list[ComposableModule]) -> dict[str, Any]:
 
     properties: dict[str, Any] = {"audio_intelligible": {"type": "boolean"}}
     required: list[str] = ["audio_intelligible"]
+
+    # Transcript lives at the root because every audio module that returns
+    # anchored items references the same transcription. Required as soon as
+    # any audio module is selected — without it the per-module anchoring
+    # contract cannot hold.
+    properties["transcript"] = {"type": "string"}
+    required.append("transcript")
 
     for module in audio_modules:
         properties[module] = _SCHEMA_BY_MODULE[module]

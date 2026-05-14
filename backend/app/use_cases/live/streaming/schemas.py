@@ -33,13 +33,46 @@ _MULETILLAS_DETECTED_ITEM = {
 }
 
 
+# Mirror of the composed schema position item. Anchored to the root
+# transcript so the strike feedback can render the filler highlighted on
+# top of the fragment text.
+_MULETILLAS_POSITION_ITEM = {
+    "type": "object",
+    "properties": {
+        "word": {"type": "string"},
+        "start_char": {"type": "integer"},
+        "end_char": {"type": "integer"},
+    },
+    "required": ["word", "start_char", "end_char"],
+}
+
+
 _FRAME_MULETILLAS_SCHEMA = {
     "type": "object",
     "properties": {
         "total": {"type": "integer"},
         "detected": {"type": "array", "items": _MULETILLAS_DETECTED_ITEM},
+        "muletillas_positions": {
+            "type": "array",
+            "items": _MULETILLAS_POSITION_ITEM,
+        },
     },
-    "required": ["total", "detected"],
+    "required": ["total", "detected", "muletillas_positions"],
+}
+
+
+# Each prosodic error anchors to a word that must appear in the root
+# transcript. Frame responses use this to drive the per-word strike
+# counter and to render which words the user misaccentuated live.
+_PROSODIC_ERROR_ITEM = {
+    "type": "object",
+    "properties": {
+        "word": {"type": "string"},
+        "expected_stress": {"type": "string"},
+        "actual_issue": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["word", "expected_stress", "actual_issue", "suggestion"],
 }
 
 
@@ -50,13 +83,33 @@ _FRAME_ACCENTUATION_SCHEMA = {
         "rhythm_score": {"type": "integer"},
         "intonation_score": {"type": "integer"},
         "stress_score": {"type": "integer"},
+        "prosodic_errors": {
+            "type": "array",
+            "items": _PROSODIC_ERROR_ITEM,
+        },
     },
     "required": [
         "pronunciation_score",
         "rhythm_score",
         "intonation_score",
         "stress_score",
+        "prosodic_errors",
     ],
+}
+
+
+# Each phoneme error anchors to a word that must appear in the root
+# transcript. Frame responses use this to drive the per-word strike
+# counter and to render which words the user mispronounced live.
+_PHONEME_ERROR_ITEM = {
+    "type": "object",
+    "properties": {
+        "phoneme": {"type": "string"},
+        "word": {"type": "string"},
+        "actual_issue": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["phoneme", "word", "actual_issue", "suggestion"],
 }
 
 
@@ -67,12 +120,17 @@ _FRAME_PRONUNCIATION_SCHEMA = {
         "consonant_score": {"type": "integer"},
         "fluency_score": {"type": "integer"},
         "intelligibility_score": {"type": "integer"},
+        "phoneme_errors": {
+            "type": "array",
+            "items": _PHONEME_ERROR_ITEM,
+        },
     },
     "required": [
         "vowel_score",
         "consonant_score",
         "fluency_score",
         "intelligibility_score",
+        "phoneme_errors",
     ],
 }
 
@@ -103,8 +161,12 @@ def build_frame_schema(modules: list[FrameModule]) -> dict[str, Any]:
 
     properties: dict[str, Any] = {
         "evaluated_until_seconds": {"type": "integer"},
+        # Required so every module that returns anchored items (muletillas
+        # positions, phoneme errors, prosodic errors) can verify against the
+        # same source-of-truth transcription instead of inventing words.
+        "transcript": {"type": "string"},
     }
-    required: list[str] = ["evaluated_until_seconds"]
+    required: list[str] = ["evaluated_until_seconds", "transcript"]
 
     for module in ordered_unique:
         properties[module] = _SCHEMA_BY_MODULE[module]

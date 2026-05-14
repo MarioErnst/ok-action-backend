@@ -38,7 +38,11 @@ from app.presentation.schemas.live import (
     StartSessionResponse,
 )
 from app.use_cases.live.composed.persist import persist_composed_evaluation
-from app.use_cases.live.composed.prompts import VALID_MODULES, ComposableModule
+from app.use_cases.live.composed.prompts import (
+    AUDIO_COMPOSABLE_MODULES as _AUDIO_COMPOSABLE_MODULES,
+    VALID_MODULES,
+    ComposableModule,
+)
 from app.use_cases.live.sessions import (
     InvalidParentLiveError,
     SessionNotActiveError,
@@ -250,25 +254,41 @@ async def evaluate_audio_endpoint(
             detail=str(exc),
         )
 
-    mime_type = verify_audio_mime(audio)
-    audio_bytes = await audio.read()
-    if not audio_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Audio is empty",
-        )
-
-    gemini_response = await evaluate_composed_audio(
-        audio_bytes=audio_bytes,
-        mime_type=mime_type,
-        modules=composable_modules,
-        prompt_text=prompt_text or None,
+    # If the only selected module is facial_expression we still keep the
+    # endpoint contract (it is the canonical way to close the session and
+    # persist the facial child) but skip the Gemini call: there is nothing
+    # for the model to evaluate from the audio. The persist layer accepts
+    # an empty audio response and only writes facial_expression_metrics.
+    has_audio_module = any(
+        module in _AUDIO_COMPOSABLE_MODULES for module in composable_modules
     )
-    if gemini_response is None:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="No se pudo evaluar el audio con Gemini",
+
+    if has_audio_module:
+        mime_type = verify_audio_mime(audio)
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Audio is empty",
+            )
+
+        gemini_response = await evaluate_composed_audio(
+            audio_bytes=audio_bytes,
+            mime_type=mime_type,
+            modules=composable_modules,
+            prompt_text=prompt_text or None,
         )
+        if gemini_response is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="No se pudo evaluar el audio con Gemini",
+            )
+    else:
+        # No audio module: skip Gemini, return a synthetic response so the
+        # persist + response layers stay uniform. audio_intelligible=True is
+        # the only honest answer when we did not even attempt to evaluate
+        # the audio (we simply did not need it).
+        gemini_response = {"audio_intelligible": True}
 
     ended_at = datetime.now(timezone.utc)
     if started_at.tzinfo is None:
