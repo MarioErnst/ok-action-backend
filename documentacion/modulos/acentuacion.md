@@ -98,12 +98,17 @@ Detalle. Retorna `None` para no-encontrado o cross-user (router → 404 sin dist
 
 ## 6. Endpoints
 
+- `GET /accentuation/phrases` → 200 `list[{id, text, category}]`. Catálogo activo del módulo, ordenado por `created_at, id` para estabilidad. Reemplaza la lista hardcoded del frontend.
 - `POST /accentuation/evaluate` — multipart con `audio` (UploadFile), `phrase_text` (Form), `phrase_index` (Form). Retorna `PhraseEvaluation` (no persiste nada). 502 si Gemini falla.
 - `POST /accentuation/sessions` → 201 / 422.
 - `GET /accentuation/sessions` → 200, lista standalone ordenada por `started_at DESC`.
 - `GET /accentuation/sessions/{id}` → 200 / 404.
 
 Todos los endpoints requieren Bearer JWT.
+
+### Catálogo `prompts` (módulo `accentuation`)
+
+Las 6 frases iniciales viven en la tabla `prompts` (seeded por `_seed_accentuation_phrases`), una por categoría (`declarative`, `interrogative`, `exclamative`). El use_case `list_phrases(db)` y el endpoint `GET /accentuation/phrases` exponen el catálogo entero al frontend. El use_case `get_phrase_by_id(db, prompt_id)` valida que un id sea conocido, activo y del módulo correcto; se usará para el flujo de B7 (persistir `prompt_id` por frase evaluada).
 
 ## 7. Pendientes en el roadmap
 

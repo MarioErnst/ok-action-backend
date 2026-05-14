@@ -98,12 +98,17 @@ Detalle. Retorna `None` para no-encontrado o cross-user.
 
 ## 6. Endpoints
 
+- `GET /pronunciation/phrases?level=...` → 200 `list[{id, text, difficulty}]`. Catálogo activo del módulo. `level` (opcional) filtra por `prompts.difficulty` (`basico` | `intermedio` | `avanzado`). Sin el query param, devuelve el catálogo completo. Reemplaza la lista hardcoded del frontend.
 - `POST /pronunciation/evaluate` — multipart con `audio`, `phrase_text`, `phrase_index`, `level` (Form). Retorna `PhraseEvaluation`. 502 si Gemini falla.
 - `POST /pronunciation/sessions` → 201 / 422.
 - `GET /pronunciation/sessions` → 200, lista standalone ordenada por `started_at DESC`.
 - `GET /pronunciation/sessions/{id}` → 200 / 404.
 
 Todos requieren Bearer JWT.
+
+### Catálogo `prompts` (módulo `pronunciation`)
+
+Las 18 frases iniciales viven en la tabla `prompts` (seeded por `_seed_pronunciation_phrases`), seis por nivel (`basico`, `intermedio`, `avanzado` en `prompts.difficulty`). El use_case `list_phrases(db, difficulty?)` y el endpoint `GET /pronunciation/phrases` exponen el catálogo al frontend. El use_case `get_phrase_by_id(db, prompt_id)` valida que un id sea conocido, activo y del módulo correcto; se usará para el flujo de B7 (persistir `prompt_id` por frase evaluada).
 
 ## 7. Pendientes en el roadmap
 
