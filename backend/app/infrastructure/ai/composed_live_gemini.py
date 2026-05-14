@@ -90,12 +90,13 @@ async def evaluate_composed_audio(
         return None
 
     # TEMPORARY DEBUG LOG — remove once live grounding hotfix is validated.
-    # Surfaces the full Gemini response so we can verify whether the
-    # grounded fields (transcript, phoneme_errors, prosodic_errors,
-    # muletillas_positions) actually come back populated during a session.
-    logger.info(
-        "[DEBUG_LIVE_COMPOSED] modules=%s response=%s",
-        modules,
-        json.dumps(parsed, ensure_ascii=False)[:4000],
+    # Uses print(flush=True) instead of logger.info because uvicorn's
+    # default --log-level only configures its own loggers; app-level info
+    # logs are silently dropped unless logging is configured globally.
+    # print() guarantees the diagnostic shows up in stdout.
+    print(
+        f"[DEBUG_LIVE_COMPOSED] modules={modules} "
+        f"response={json.dumps(parsed, ensure_ascii=False)[:4000]}",
+        flush=True,
     )
     return parsed

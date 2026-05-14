@@ -98,14 +98,14 @@ async def evaluate_frame_audio(
         return None
 
     # TEMPORARY DEBUG LOG — remove once live grounding hotfix is validated.
-    # Surfaces the full per-frame Gemini response so we can verify whether
-    # phoneme_errors / prosodic_errors / muletillas_positions actually come
-    # back populated. evaluated_so_far_seconds is included so the dev can
-    # correlate the log line with the position in the session.
-    logger.info(
-        "[DEBUG_LIVE_FRAME] modules=%s evaluated_so_far=%s response=%s",
-        modules,
-        evaluated_so_far_seconds,
-        json.dumps(parsed, ensure_ascii=False)[:4000],
+    # Uses print(flush=True) instead of logger.info because uvicorn's
+    # default --log-level only configures its own loggers; app-level info
+    # logs are silently dropped unless logging is configured globally.
+    # print() guarantees the diagnostic shows up in stdout.
+    print(
+        f"[DEBUG_LIVE_FRAME] modules={modules} "
+        f"evaluated_so_far={evaluated_so_far_seconds} "
+        f"response={json.dumps(parsed, ensure_ascii=False)[:4000]}",
+        flush=True,
     )
     return parsed
