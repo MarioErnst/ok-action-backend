@@ -25,6 +25,7 @@ from app.presentation.schemas.muletillas import (
 )
 from app.use_cases.live.sessions import InvalidParentLiveError
 from app.use_cases.muletillas.evaluate_response import (
+    NoMuletillasPromptsError,
     evaluate_response,
     get_random_question,
 )
@@ -60,14 +61,21 @@ def _build_detail(
 @router.get("/questions/random", response_model=RandomQuestionResponse)
 async def get_random_question_endpoint(
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
 ) -> RandomQuestionResponse:
-    """Return a random open-ended question.
+    """Return a random open-ended question from the prompts catalog.
 
-    Currently backed by a hardcoded list in the use_case; migration to the
-    unified prompts catalog (with module='muletillas') is pending.
+    Returns 503 if the catalog has no active muletillas prompts, which
+    typically means the seed has not been run on this environment.
     """
 
-    return RandomQuestionResponse(question=get_random_question())
+    try:
+        question = await get_random_question(db)
+    except NoMuletillasPromptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
+    return RandomQuestionResponse(question=question)
 
 
 @router.post("/evaluate", response_model=MuletillasEvaluationResponse)
