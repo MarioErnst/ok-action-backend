@@ -45,6 +45,12 @@ _GEMINI_EVALUATED_MODULES: tuple[ComposableModule, ...] = (
 )
 
 
+# Public alias used by the router to decide whether to invoke Gemini at
+# all. If a request only selects facial_expression there is nothing the
+# audio model can contribute and the endpoint can short-circuit the call.
+AUDIO_COMPOSABLE_MODULES: tuple[ComposableModule, ...] = _GEMINI_EVALUATED_MODULES
+
+
 _HEADER = """Eres un evaluador experto de comunicacion oral en espanol latinoamericano.
 Estas evaluando un audio de HABLA LIBRE de un estudiante en una sesion de practica.
 El estudiante NO esta leyendo una frase fija; esta hablando espontaneamente sobre un
@@ -72,6 +78,19 @@ Solo si hay un intento claro de habla libre con duracion suficiente, procede con
 la evaluacion completa de cada modulo seleccionado."""
 
 
+_TRANSCRIPT_REQUIREMENT = """PASO 2 - TRANSCRIPCION LITERAL (REGLA ANTI-ALUCINACION):
+Antes de evaluar cualquier modulo, transcribe palabra por palabra lo que el estudiante
+dice en el audio y devuelvelo en el campo `transcript` del JSON raiz. Usa minusculas y
+puntuacion natural. Si no estas seguro de una palabra, escribe lo que sonó mas cercano
+o usa [inaudible].
+
+ESTA TRANSCRIPCION ES UN CONTRATO. Cada modulo que reporte items anclados (muletillas,
+errores fonemicos, errores prosodicos) DEBE referirse a palabras o segmentos que
+aparezcan literalmente en `transcript`. Si una palabra no aparece en `transcript`, NO
+puedes reportarla como muletilla, error fonemico ni error prosodico. Prefiere reportar
+menos antes que inventar."""
+
+
 _CONSIGNA_TEMPLATE = """CONSIGNA DEL USUARIO PARA LA SESION:
 {consigna}
 
@@ -80,20 +99,25 @@ literal a la consigna."""
 
 
 _MULETILLAS_SECTION = """MODULO MULETILLAS:
-Detecta palabras de relleno (muletillas) en el habla libre. Considera muletillas
-como "o sea", "este", "eh", "um", "ah", "basicamente", "literalmente",
-"obviamente", "la verdad", "de hecho", "como que", "pues", "bueno", repeticiones
-sin sentido semantico, y cualquier patron de relleno recurrente.
+Detecta palabras de relleno (muletillas) que aparezcan LITERALMENTE en `transcript`.
+Ejemplos clasicos a considerar SOLO si estan en el transcript: "eh", "este", "o sea".
+NO reportes muletillas tipicas ("la verdad", "de hecho", "obviamente", "basicamente",
+etc.) salvo que tu transcripcion las contenga textualmente.
 
-Severidad por palabra:
+Severidad por palabra (basada en ocurrencias en el transcript):
 - "high" si aparece 3 o mas veces
 - "medium" si aparece 2 veces
 - "low" si aparece 1 vez
 
 Devuelve en la seccion "muletillas" del JSON:
 - fluency_score (entero 0-100): fluidez global del discurso, descontando muletillas y rellenos.
-- total_muletillas (entero): cantidad total de muletillas detectadas en el audio.
+- total_muletillas (entero): cantidad total de ocurrencias de muletillas en el transcript.
 - detected: lista de objetos {word, count, severity, suggestion} con cada muletilla unica.
+- muletillas_positions: lista con una entrada por cada ocurrencia individual de muletilla,
+  ordenadas como aparecen en el transcript. Cada entrada es {word, start_char, end_char}
+  donde `transcript[start_char:end_char]` DEBE devolver exactamente la muletilla
+  (start_char inclusivo, end_char exclusivo, indices 0-based sobre el campo `transcript`).
+  Si una muletilla aparece N veces, debe haber N entradas en muletillas_positions.
 - feedback (string en espanol): retroalimentacion breve y constructiva, minimo 2 oraciones."""
 
 
@@ -109,6 +133,17 @@ Devuelve en la seccion "accentuation" del JSON:
 - rhythm_score (entero 0-100): cadencia y ritmo natural del habla.
 - intonation_score (entero 0-100): variacion tonal y curva melodica.
 - stress_score (entero 0-100): correccion de los acentos prosodicos en las palabras producidas.
+- prosodic_errors: lista de errores prosodicos accionables. Cada error es
+  {word, expected_stress, actual_issue, suggestion} donde:
+    * word: la palabra del transcript donde ocurrio el error de acentuacion
+      o entonacion. DEBE aparecer literalmente en `transcript`. Si la
+      palabra no esta en transcript, no reportes este error.
+    * expected_stress: como debio acentuarse o entonarse esa palabra (por
+      ejemplo, "PA-ja-ro" indicando la silaba tonica esperada en mayusculas,
+      o una descripcion breve de la curva melodica correcta).
+    * actual_issue: descripcion breve de como la pronuncio el estudiante.
+    * suggestion: indicacion accionable para corregirlo.
+  Si no hay errores claros, devuelve una lista vacia. NUNCA inventes errores.
 - feedback (string en espanol): retroalimentacion concreta sobre acentuacion en habla libre, minimo 2 oraciones."""
 
 
@@ -123,6 +158,16 @@ Devuelve en la seccion "pronunciation" del JSON:
 - consonant_score (entero 0-100): calidad de produccion de consonantes.
 - fluency_score (entero 0-100): fluidez fonetica y transiciones entre sonidos.
 - intelligibility_score (entero 0-100): inteligibilidad general para un hablante nativo.
+- phoneme_errors: lista de errores fonemicos accionables. Cada error es
+  {phoneme, word, actual_issue, suggestion} donde:
+    * phoneme: el fonema afectado (ej. "rr", "s", "ll").
+    * word: la palabra del transcript donde ocurrio el error. DEBE aparecer
+      literalmente en `transcript`. Si la palabra no esta en transcript, no
+      reportes este error.
+    * actual_issue: descripcion breve del problema observado en esa palabra.
+    * suggestion: indicacion accionable para corregirlo.
+  Si no hay errores claros, devuelve una lista vacia. NUNCA inventes errores
+  para llenar la lista.
 - feedback (string en espanol): retroalimentacion concreta sobre pronunciacion, minimo 2 oraciones."""
 
 
@@ -169,6 +214,7 @@ def build_composed_prompt(
         # Caller asked only for facial_expression (or nothing prompt-shaped).
         # We still need a sane prompt for Gemini to gate audio intelligibility
         # against, so we ask only for audio_intelligible without any module section.
+        # Transcript is also unnecessary when no audio module needs anchoring.
         parts: list[str] = [
             _HEADER,
             _AUDIO_GATE,
@@ -177,13 +223,13 @@ def build_composed_prompt(
         ]
         return "\n\n".join(parts)
 
-    parts = [_HEADER, _AUDIO_GATE]
+    parts = [_HEADER, _AUDIO_GATE, _TRANSCRIPT_REQUIREMENT]
 
     consigna = (prompt_text or "").strip()
     if consigna:
         parts.append(_CONSIGNA_TEMPLATE.format(consigna=consigna))
 
-    parts.append("PASO 2 - EVALUACION POR MODULO:")
+    parts.append("PASO 3 - EVALUACION POR MODULO:")
     for module in audio_modules:
         parts.append(_SECTION_BY_MODULE[module])
 

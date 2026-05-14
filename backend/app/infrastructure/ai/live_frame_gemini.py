@@ -67,6 +67,14 @@ async def evaluate_frame_audio(
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=frame_schema,
+                    # Bumped from 0.2 to 0.4 because the previous setting,
+                    # combined with strict anti-hallucination wording in
+                    # the prompt, made Gemini return empty phoneme_errors
+                    # and prosodic_errors even when the user repeatedly
+                    # mispronounced. 0.4 keeps the response largely stable
+                    # while giving the model room to flag perceptible
+                    # errors that it would otherwise suppress.
+                    temperature=0.4,
                 ),
             ),
             timeout=timeout_s,

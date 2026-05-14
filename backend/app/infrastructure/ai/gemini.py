@@ -137,6 +137,11 @@ class GeminiAccentuationService:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=GEMINI_RESPONSE_SCHEMA,
+                    # Stress detection per phrase is a classification task;
+                    # keeping temperature low avoids the model picking
+                    # different syllable indices across runs for the same
+                    # audio.
+                    temperature=0.2,
                 ),
             )
         except Exception as error:

@@ -63,6 +63,12 @@ async def evaluate_composed_audio(
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=composed_schema,
+                # Lowered from the Gemini default (1.0) so detection-heavy
+                # outputs (muletillas list, phoneme errors, prosodic errors)
+                # become near-deterministic. 0.2 leaves enough variance for
+                # the natural-language feedback strings without inviting
+                # the hallucinated false positives we observed at default.
+                temperature=0.2,
             ),
         )
     except Exception as exc:

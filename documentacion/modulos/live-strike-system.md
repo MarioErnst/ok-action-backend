@@ -200,3 +200,140 @@ Alternativa: usar el endpoint `abandon` existente con los nuevos `stop_reason`. 
 - Tabla `live_frame_evaluations` para trazabilidad longitudinal (no para esta versión).
 - Endpoint para re-evaluar una sesión cortada (no para esta versión).
 - Configurabilidad del umbral 55 vía endpoint (no para esta versión, constante en código).
+
+## 11. Hotfix de grounding en la evaluación compuesta
+
+A partir del hotfix `live-evaluation-grounding`, el prompt y el schema del composed
+contra Gemini incorporan un mecanismo de anti-alucinación:
+
+### Campo `transcript` en la raíz del JSON
+
+Cuando se solicita al menos un módulo evaluable por audio (`muletillas`,
+`accentuation`, `pronunciation`), el schema requiere un campo `transcript` en la
+raíz con la transcripción literal del audio. La prompt obliga a transcribir
+**antes** de evaluar y declara que cualquier item anclado (muletilla, error
+fonémico, error prosódico) que el modelo reporte debe corresponder a una palabra
+o segmento del propio `transcript`. Si la palabra no aparece, no puede listarla.
+
+### Items anclados por módulo (efímeros, no persistidos)
+
+| Módulo | Campo nuevo | Forma |
+|---|---|---|
+| `muletillas` | `muletillas_positions[]` | `{word, start_char, end_char}` con la contraintegridad `transcript[start_char:end_char] == word`. Una entrada por ocurrencia. |
+| `accentuation` | `prosodic_errors[]` | `{word, expected_stress, actual_issue, suggestion}`; `word` debe aparecer en `transcript`. |
+| `pronunciation` | `phoneme_errors[]` | `{phoneme, word, actual_issue, suggestion}`; `word` debe aparecer en `transcript`. |
+
+Todos estos campos son **efímeros**: viajan en la respuesta HTTP para que el
+frontend renderice retroalimentación accionable y como contrato anti-alucinación
+para el LLM. **No se persisten en BD** — las tablas `<modulo>_metrics` no tienen
+columnas para texto generado por LLM (regla CLAUDE.md backend). `persist.py`
+ignora estos campos al guardar.
+
+### `temperature=0.2` en la llamada Gemini
+
+`composed_live_gemini.py` y los tres servicios standalone (`muletillas_gemini.py`,
+`pronunciation_gemini.py`, `gemini.py` de acentuación) ahora setean
+`temperature=0.2` en `GenerateContentConfig`. Reduce la varianza de las tareas de
+detección y clasificación (listas de muletillas, errores) manteniendo naturalidad
+en el campo `feedback`.
+
+### Por qué este hotfix
+
+- **Antes**: Gemini reportaba muletillas que no estaban en el audio (sesgo del
+  prompt que listaba ejemplos típicos como "la verdad", "de hecho"). La
+  pronunciación devolvía solo scores agregados sin errores accionables. La
+  acentuación, idem.
+- **Ahora**: el transcript es contrato. Los listados de muletillas, errores
+  fonémicos y errores prosódicos están anclados a palabras del transcript. El
+  frontend puede mostrar al usuario qué se transcribió y dónde estuvieron los
+  errores, permitiéndole verificar contra el audio real.
+
+## 12. Hotfix de grounding en la evaluación por frame
+
+La sección 11 explica el cambio en el composed (cierre de sesión). Esta sección
+documenta el cambio paralelo en el flujo por frame (durante la sesión), que es
+el que alimenta el strike counter.
+
+### 12.1 Frame Gemini con `temperature=0.2`
+
+`live_frame_gemini.py` ahora setea `temperature=0.2` en `GenerateContentConfig`.
+Lo mismo que en el composed: el frame es una tarea de detección/clasificación,
+y la variabilidad en defaults rompe la estabilidad del strike counter (un mismo
+audio podía sumar 1 strike en una corrida y 0 en la siguiente).
+
+### 12.2 Campos nuevos en el schema del frame
+
+| Campo | Ubicación | Forma |
+|---|---|---|
+| `transcript` | raíz del JSON | string. Requerido cuando hay al menos un módulo seleccionado. |
+| `muletillas.muletillas_positions[]` | sección muletillas | `{word, start_char, end_char}`, una entrada por ocurrencia, ancladas a `transcript`. |
+| `accentuation.prosodic_errors[]` | sección acentuación | `{word, expected_stress, actual_issue, suggestion}`. `word` debe aparecer literalmente en `transcript`. |
+| `pronunciation.phoneme_errors[]` | sección pronunciación | `{phoneme, word, actual_issue, suggestion}`. `word` debe aparecer literalmente en `transcript`. |
+
+Todos efímeros: viajan en la respuesta HTTP del frame y no se persisten (las
+filas de frame jamás se persisten en BD, regla del módulo).
+
+### 12.3 Anti-alucinación
+
+Mismo contrato que el composed: el prompt obliga a transcribir antes de
+evaluar y declara que cualquier `word` reportada como error debe aparecer
+literalmente en el `transcript` del frame. El listado de ejemplos de
+muletillas se redujo a `eh`, `este`, `o sea` con instrucción explícita de no
+reportar las demás clásicas salvo que estén textualmente en el transcript.
+
+### 12.4 Contrato de strike basado en items (no-dedup, threshold 2)
+
+Importante: el strike counter del frontend cambia de "score parcial bajo" a
+"items de error reportados por Gemini". El backend no calcula strikes —los
+calcula `useFrameStrikes.ts` en el frontend— pero el schema del frame está
+diseñado para soportar este flujo:
+
+- **Muletillas**: cada ocurrencia (suma de `muletillas.detected[].count`)
+  suma al counter. Threshold 2 → stop.
+- **Pronunciación**: cada item en `pronunciation.phoneme_errors[]` suma 1
+  al counter. Sin deduplicación: si Gemini reporta la misma palabra mal
+  pronunciada en frames distintos, cada item cuenta. Threshold 2 → stop.
+- **Acentuación**: cada item en `accentuation.prosodic_errors[]` suma 1
+  al counter. Mismo no-dedup. Threshold 2 → stop.
+
+Los tres contadores son **independientes**: cualquiera que llegue a 2
+dispara el corte. 1 muletilla + 1 error de pronunciación NO detiene.
+
+Los sub-scores (`vowel_score`, `pronunciation_score`, etc.) **siguen llegando**
+en la respuesta y se promedian al cierre; lo que cambió es solo el disparador
+del strike counter. La pantalla de feedback de strike también pasa a renderizar
+palabra + detalle accionable en lugar del string genérico
+`Score parcial mínimo: X`.
+
+#### Por qué no-dedup
+
+Una variante intermedia (dedup por palabra normalizada con threshold 3) se
+implementó primero pero quedó demasiado permisiva: un usuario que repetía
+6 veces el mismo error fonémico solo acumulaba 1 strike. El no-dedup con
+threshold 2 da un solo "aviso" antes del corte, lo que en la práctica
+refleja mejor la intención pedagógica del strike system. Gemini ya tiende
+a agrupar errores repetidos del mismo fonema en una sola entrada de
+`phoneme_errors[]` cuando ocurren en un mismo frame, así que el counter
+no se dispara de forma absurda; sí se dispara cuando el error persiste
+entre frames distintos.
+
+### 12.5 Saltar Gemini cuando solo se selecciona facial_expression
+
+`AUDIO_COMPOSABLE_MODULES` (alias público de `_GEMINI_EVALUATED_MODULES` en
+`composed/prompts.py`) lista los módulos que dependen del modelo de audio:
+`muletillas`, `accentuation`, `pronunciation`. El endpoint
+`POST /live/sessions/{id}/audio-evaluation` ahora hace un short-circuit:
+
+- Si la selección contiene al menos uno de esos módulos: lee el audio,
+  valida el MIME y llama a Gemini igual que antes.
+- Si la selección es **solo `facial_expression`**: salta la lectura del
+  audio, salta la llamada a Gemini, y construye una respuesta sintética
+  `{"audio_intelligible": True}`. `persist_composed_evaluation` ignora las
+  secciones audio y solo persiste `facial_expression_metrics` a partir
+  del `facial_summary` recibido en el body.
+
+Beneficios:
+- Cero tokens Gemini consumidos cuando el usuario practica solo expresión.
+- Latencia del cierre de sesión cae de ~3-15s (llamada Gemini) a <100ms.
+- Backend no exige que el audio sea inteligible (ni siquiera que tenga
+  contenido) cuando no se va a evaluar.
