@@ -92,6 +92,21 @@ _ACCENTUATION_SECTION_SCHEMA = {
 }
 
 
+# Each phoneme error anchors to a word that must appear in the root
+# transcript. Backend does not persist this list; it travels in the HTTP
+# response for the UI and to enforce Gemini's anti-hallucination contract.
+_PHONEME_ERROR_ITEM = {
+    "type": "object",
+    "properties": {
+        "phoneme": {"type": "string"},
+        "word": {"type": "string"},
+        "actual_issue": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["phoneme", "word", "actual_issue", "suggestion"],
+}
+
+
 _PRONUNCIATION_SECTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -99,6 +114,10 @@ _PRONUNCIATION_SECTION_SCHEMA = {
         "consonant_score": {"type": "integer"},
         "fluency_score": {"type": "integer"},
         "intelligibility_score": {"type": "integer"},
+        "phoneme_errors": {
+            "type": "array",
+            "items": _PHONEME_ERROR_ITEM,
+        },
         "feedback": {"type": "string"},
     },
     "required": [
@@ -106,6 +125,7 @@ _PRONUNCIATION_SECTION_SCHEMA = {
         "consonant_score",
         "fluency_score",
         "intelligibility_score",
+        "phoneme_errors",
         "feedback",
     ],
 }

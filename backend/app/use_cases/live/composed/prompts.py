@@ -141,6 +141,16 @@ Devuelve en la seccion "pronunciation" del JSON:
 - consonant_score (entero 0-100): calidad de produccion de consonantes.
 - fluency_score (entero 0-100): fluidez fonetica y transiciones entre sonidos.
 - intelligibility_score (entero 0-100): inteligibilidad general para un hablante nativo.
+- phoneme_errors: lista de errores fonemicos accionables. Cada error es
+  {phoneme, word, actual_issue, suggestion} donde:
+    * phoneme: el fonema afectado (ej. "rr", "s", "ll").
+    * word: la palabra del transcript donde ocurrio el error. DEBE aparecer
+      literalmente en `transcript`. Si la palabra no esta en transcript, no
+      reportes este error.
+    * actual_issue: descripcion breve del problema observado en esa palabra.
+    * suggestion: indicacion accionable para corregirlo.
+  Si no hay errores claros, devuelve una lista vacia. NUNCA inventes errores
+  para llenar la lista.
 - feedback (string en espanol): retroalimentacion concreta sobre pronunciacion, minimo 2 oraciones."""
 
 
