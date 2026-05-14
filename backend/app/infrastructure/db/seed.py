@@ -132,6 +132,48 @@ def _seed_precision_prompts(session: OrmSession) -> None:
             print(f"Precision prompt already exists: '{text[:50]}...'")
 
 
+def _seed_pause_prompts(session: OrmSession) -> None:
+    """Seed open-ended prompts for the pauses module.
+
+    Each prompt invites a short improvised speech so the frontend's audio
+    pipeline can score the user's pause patterns (natural / rhetorical /
+    break). Idempotent on (module, text). Replaces the hardcoded
+    PAUSE_QUESTIONS list that lived in the frontend.
+    """
+
+    prompts = [
+        "Describe brevemente una experiencia presentando frente a otras personas.",
+        "Explica cómo resolverías un problema importante con tu equipo.",
+        "Cuenta qué habilidad comunicacional te gustaría mejorar y por qué.",
+        "Describe un proyecto que te emocione y explica por qué.",
+        "Cuéntame una anécdota reciente que te haya hecho reír.",
+        "Habla de un lugar donde te sientas cómodo hablando en público.",
+        "Explica una idea compleja de tu trabajo o estudio en palabras simples.",
+        "Describe el último libro o curso que te dejó algo importante.",
+    ]
+    for text in prompts:
+        existing = session.execute(
+            select(Prompt).where(
+                Prompt.module == ModuleEnum.pauses,
+                Prompt.text == text,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                Prompt(
+                    module=ModuleEnum.pauses,
+                    text=text,
+                    category="general",
+                    difficulty="basic",
+                    language="es",
+                    is_active=True,
+                )
+            )
+            print(f"Pauses prompt seeded: '{text[:50]}...'")
+        else:
+            print(f"Pauses prompt already exists: '{text[:50]}...'")
+
+
 def _seed_muletillas_prompts(session: OrmSession) -> None:
     """Seed open-ended questions for the muletillas module.
 
@@ -248,6 +290,7 @@ def seed() -> None:
         _seed_precision_prompts(session)
         _seed_linguistic_versatility_prompts(session)
         _seed_muletillas_prompts(session)
+        _seed_pause_prompts(session)
         _seed_dev_user(session, role)
         session.commit()
         print("Seed completed")
