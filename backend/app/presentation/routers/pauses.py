@@ -12,18 +12,41 @@ from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.pauses import (
     PauseMetricsOutput,
+    PausePromptOutput,
     PauseSessionCreate,
     PauseSessionDetail,
     PauseSessionListItem,
 )
 from app.use_cases.live.sessions import InvalidParentLiveError
+from app.use_cases.pauses.prompts import NoPausePromptsError, get_random_prompt
 from app.use_cases.pauses.sessions import (
+    PausePromptNotAvailableError,
     create_pause_session,
     get_pause_session,
     list_pause_sessions,
 )
 
 router = APIRouter(prefix="/pauses", tags=["pauses"])
+
+
+@router.get("/prompts/random", response_model=PausePromptOutput)
+async def get_random_prompt_endpoint(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> PausePromptOutput:
+    """Return one random active pauses prompt from the catalog.
+
+    503 means the catalog has no active prompts for this module (typically a
+    seed-not-run state on this environment).
+    """
+
+    try:
+        prompt = await get_random_prompt(db)
+    except NoPausePromptsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
+    return PausePromptOutput.model_validate(prompt)
 
 
 def _build_detail(
@@ -57,6 +80,10 @@ async def create_session_endpoint(
             db=db, user=user, payload=payload
         )
     except InvalidParentLiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    except PausePromptNotAvailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         )

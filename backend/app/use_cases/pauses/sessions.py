@@ -11,6 +11,13 @@ from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.presentation.schemas.pauses import PauseSessionCreate
 from app.use_cases.live.sessions import validate_parent_live_session
+from app.use_cases.pauses.prompts import get_prompt_by_id
+
+
+class PausePromptNotAvailableError(ValueError):
+    """Raised when prompt_id in the payload is unknown, inactive, or not
+    a pauses prompt. The router maps it to 422.
+    """
 
 
 async def create_pause_session(
@@ -23,11 +30,21 @@ async def create_pause_session(
     Inserts the root sessions row and the 1:1 pause_metrics row. duration_ms
     is derived server-side from the time range. Score comes from the client
     because pauses scoring is a composite of count, total duration and
-    silence ratio that the frontend computes.
+    silence ratio that the frontend computes. The optional prompt_id is
+    validated against the catalog before persisting so a client cannot link
+    a pauses session to a prompt from another module.
     """
 
     if payload.parent_id is not None:
         await validate_parent_live_session(db, user, payload.parent_id)
+
+    prompt_id = payload.metrics.prompt_id
+    if prompt_id is not None:
+        prompt_row = await get_prompt_by_id(db, prompt_id)
+        if prompt_row is None:
+            raise PausePromptNotAvailableError(
+                f"prompt {prompt_id} no está disponible para pausas"
+            )
 
     duration_ms = int((payload.ended_at - payload.started_at).total_seconds() * 1000)
 
@@ -50,6 +67,7 @@ async def create_pause_session(
         total_pause_ms=payload.metrics.total_pause_ms,
         longest_pause_ms=payload.metrics.longest_pause_ms,
         silence_pct=payload.metrics.silence_pct,
+        prompt_id=prompt_id,
     )
     db.add(metrics_row)
 

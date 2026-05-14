@@ -24,6 +24,7 @@ from app.infrastructure.ai.precision_gemini import (
     GeminiPrecisionService,
     PrecisionGeminiError,
 )
+from app.infrastructure.audio.mime import verify_audio_mime
 from app.infrastructure.db.session import get_session
 from app.infrastructure.security.dependencies import get_current_user
 from app.presentation.schemas.precision import (
@@ -131,8 +132,8 @@ async def evaluate_round_endpoint(
     persistence keeps only scores and is_audio_intelligible.
     """
 
+    mime_type = verify_audio_mime(audio)
     audio_bytes = await audio.read()
-    mime_type = audio.content_type or "audio/webm"
 
     # Fetch the prompt text up front so a missing/inactive prompt fails with
     # 422 here instead of leaking through Gemini as a 502. The use_case

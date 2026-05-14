@@ -50,6 +50,9 @@ class LoudnessMetricsInput(BaseModel):
     high_pct: int = Field(ge=0, le=100)
     clipping_pct: int = Field(ge=0, le=100)
     peak_db: float
+    # Ambient noise floor measured during the client-side calibration step.
+    # Optional so legacy clients (no calibration UX) keep working.
+    noise_floor_db: float | None = None
 
     @model_validator(mode="after")
     def validate_bands_sum(self) -> "LoudnessMetricsInput":
@@ -70,6 +73,7 @@ class LoudnessMetricsOutput(BaseModel):
     high_pct: int
     clipping_pct: int
     peak_db: float
+    noise_floor_db: float | None = None
 
 
 class LoudnessSessionCreate(BaseModel):
