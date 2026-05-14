@@ -88,7 +88,7 @@ async def evaluate_frame_audio(
         return None
 
     try:
-        return json.loads(response.text)
+        parsed = json.loads(response.text)
     except json.JSONDecodeError as exc:
         logger.warning(
             "Frame Gemini JSON decode error: %s | raw: %.200s",
@@ -96,3 +96,16 @@ async def evaluate_frame_audio(
             response.text,
         )
         return None
+
+    # TEMPORARY DEBUG LOG — remove once live grounding hotfix is validated.
+    # Surfaces the full per-frame Gemini response so we can verify whether
+    # phoneme_errors / prosodic_errors / muletillas_positions actually come
+    # back populated. evaluated_so_far_seconds is included so the dev can
+    # correlate the log line with the position in the session.
+    logger.info(
+        "[DEBUG_LIVE_FRAME] modules=%s evaluated_so_far=%s response=%s",
+        modules,
+        evaluated_so_far_seconds,
+        json.dumps(parsed, ensure_ascii=False)[:4000],
+    )
+    return parsed

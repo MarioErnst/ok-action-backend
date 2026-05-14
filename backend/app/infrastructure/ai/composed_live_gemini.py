@@ -80,7 +80,7 @@ async def evaluate_composed_audio(
         return None
 
     try:
-        return json.loads(response.text)
+        parsed = json.loads(response.text)
     except json.JSONDecodeError as exc:
         logger.warning(
             "Composed live Gemini JSON decode error: %s | raw: %.300s",
@@ -88,3 +88,14 @@ async def evaluate_composed_audio(
             response.text,
         )
         return None
+
+    # TEMPORARY DEBUG LOG — remove once live grounding hotfix is validated.
+    # Surfaces the full Gemini response so we can verify whether the
+    # grounded fields (transcript, phoneme_errors, prosodic_errors,
+    # muletillas_positions) actually come back populated during a session.
+    logger.info(
+        "[DEBUG_LIVE_COMPOSED] modules=%s response=%s",
+        modules,
+        json.dumps(parsed, ensure_ascii=False)[:4000],
+    )
+    return parsed
