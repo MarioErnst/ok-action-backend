@@ -64,16 +64,80 @@ class AccentuationMetricsOutput(BaseModel):
     phrases_count: int
 
 
+class AccentuationPhraseEvaluationInput(BaseModel):
+    """One persisted phrase evaluation for the session.
+
+    The client sends the prompt_id (from the catalog) plus the four sub-scores
+    Gemini returned during /evaluate. Ephemeral fields (feedback, specific
+    errors, text) stay out — they do not belong in the DB.
+    """
+
+    phrase_index: int = Field(ge=0)
+    prompt_id: UUID
+    pronunciation_score: int = Field(ge=0, le=100)
+    rhythm_score: int = Field(ge=0, le=100)
+    intonation_score: int = Field(ge=0, le=100)
+    stress_score: int = Field(ge=0, le=100)
+
+
+class AccentuationPhraseEvaluationOutput(BaseModel):
+    """Per-phrase row returned by the detail endpoint.
+
+    Includes the prompt text and category so the UI can render the phrase
+    without an extra catalog round-trip.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    phrase_index: int
+    prompt_id: UUID
+    prompt_text: str
+    prompt_category: str
+    pronunciation_score: int
+    rhythm_score: int
+    intonation_score: int
+    stress_score: int
+
+
+class AccentuationWeakestPromptOutput(BaseModel):
+    """One row of the weakest-prompts insights endpoint.
+
+    `avg_score` is the average of the four sub-scores across every
+    evaluation of this prompt by the user. `practice_count` is the number
+    of times the prompt has been evaluated; UIs typically hide entries
+    below a minimum practice count to avoid noise.
+    """
+
+    prompt_id: UUID
+    text: str
+    category: str
+    avg_score: int = Field(ge=0, le=100)
+    practice_count: int = Field(ge=1)
+
+
 class AccentuationSessionCreate(BaseModel):
     started_at: datetime
     ended_at: datetime
     metrics: AccentuationMetricsInput
+    phrases: list[AccentuationPhraseEvaluationInput] = Field(default_factory=list)
     parent_id: UUID | None = None
 
     @model_validator(mode="after")
-    def validate_time_range(self) -> "AccentuationSessionCreate":
+    def validate_session_consistency(self) -> "AccentuationSessionCreate":
         if self.ended_at <= self.started_at:
             raise ValueError("ended_at must be greater than started_at")
+        if len(self.phrases) != self.metrics.phrases_count:
+            raise ValueError(
+                "metrics.phrases_count must equal the length of phrases"
+            )
+        indexes = [p.phrase_index for p in self.phrases]
+        if len(set(indexes)) != len(indexes):
+            raise ValueError("phrase_index must be unique within phrases")
+        for index in indexes:
+            if index >= self.metrics.phrases_count:
+                raise ValueError(
+                    "phrase_index must be < metrics.phrases_count"
+                )
         return self
 
 
