@@ -135,6 +135,10 @@ class GeminiPronunciationService:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PRONUNCIATION_RESPONSE_SCHEMA,
+                    # Phonetic scoring + phoneme_errors list is a detection
+                    # task. Low temperature keeps the same input scoring
+                    # consistently and reduces hallucinated phoneme errors.
+                    temperature=0.2,
                 ),
             )
         except Exception as error:

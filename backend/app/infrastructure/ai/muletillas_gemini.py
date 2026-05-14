@@ -157,6 +157,9 @@ class GeminiMuletillasService:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=MULETILLAS_RESPONSE_SCHEMA,
+                    # Detection-heavy task: keep the temperature low so two
+                    # runs of the same audio return the same muletillas list.
+                    temperature=0.2,
                 ),
             )
         except Exception as error:
