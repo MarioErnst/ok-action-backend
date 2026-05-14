@@ -61,6 +61,21 @@ _FRAME_MULETILLAS_SCHEMA = {
 }
 
 
+# Each prosodic error anchors to a word that must appear in the root
+# transcript. Frame responses use this to drive the per-word strike
+# counter and to render which words the user misaccentuated live.
+_PROSODIC_ERROR_ITEM = {
+    "type": "object",
+    "properties": {
+        "word": {"type": "string"},
+        "expected_stress": {"type": "string"},
+        "actual_issue": {"type": "string"},
+        "suggestion": {"type": "string"},
+    },
+    "required": ["word", "expected_stress", "actual_issue", "suggestion"],
+}
+
+
 _FRAME_ACCENTUATION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -68,12 +83,17 @@ _FRAME_ACCENTUATION_SCHEMA = {
         "rhythm_score": {"type": "integer"},
         "intonation_score": {"type": "integer"},
         "stress_score": {"type": "integer"},
+        "prosodic_errors": {
+            "type": "array",
+            "items": _PROSODIC_ERROR_ITEM,
+        },
     },
     "required": [
         "pronunciation_score",
         "rhythm_score",
         "intonation_score",
         "stress_score",
+        "prosodic_errors",
     ],
 }
 

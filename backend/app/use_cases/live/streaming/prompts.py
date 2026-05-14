@@ -107,7 +107,18 @@ Devuelve en la seccion "accentuation":
 - pronunciation_score (entero 0-100): claridad articulatoria en el fragmento.
 - rhythm_score (entero 0-100): cadencia y ritmo en el fragmento.
 - intonation_score (entero 0-100): variacion tonal en el fragmento.
-- stress_score (entero 0-100): correccion de acentos prosodicos en las palabras."""
+- stress_score (entero 0-100): correccion de acentos prosodicos en las palabras.
+- prosodic_errors: lista con UNA entrada por palabra del fragmento con un
+  error prosodico claro. Cada entrada es {word, expected_stress,
+  actual_issue, suggestion} donde:
+    * word: la palabra del transcript donde ocurrio el error. DEBE
+      aparecer literalmente en `transcript`. Si no esta, omitela.
+    * expected_stress: como debio acentuarse (ej. "PA-ja-ro" con la silaba
+      tonica en mayusculas, o una indicacion breve de la curva esperada).
+    * actual_issue: una linea describiendo como la pronuncio el estudiante.
+    * suggestion: una linea con la indicacion accionable.
+  Reporta solo errores claros y observables; si no hay, devuelve
+  prosodic_errors: []. NUNCA inventes errores."""
 
 
 _FRAME_PRONUNCIATION_SECTION = """MODULO PRONUNCIACION:
