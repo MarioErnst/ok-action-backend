@@ -91,7 +91,7 @@ async def evaluate_frame_audio(
         return None
 
     try:
-        parsed = json.loads(response.text)
+        return json.loads(response.text)
     except json.JSONDecodeError as exc:
         logger.warning(
             "Frame Gemini JSON decode error: %s | raw: %.200s",
@@ -99,16 +99,3 @@ async def evaluate_frame_audio(
             response.text,
         )
         return None
-
-    # TEMPORARY DEBUG LOG — remove once live grounding hotfix is validated.
-    # Uses print(flush=True) instead of logger.info because uvicorn's
-    # default --log-level only configures its own loggers; app-level info
-    # logs are silently dropped unless logging is configured globally.
-    # print() guarantees the diagnostic shows up in stdout.
-    print(
-        f"[DEBUG_LIVE_FRAME] modules={modules} "
-        f"evaluated_so_far={evaluated_so_far_seconds} "
-        f"response={json.dumps(parsed, ensure_ascii=False)[:4000]}",
-        flush=True,
-    )
-    return parsed
