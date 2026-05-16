@@ -195,33 +195,35 @@ async def live_session_stream_ws(
     await ws.send_json({"type": "ready"})
 
     reader_task = asyncio.create_task(read_client())
+    supervisor_failed = False
     try:
         await supervisor.run(audio_iter())
-    except Exception as exc:
-        logger.exception("Live WS supervisor failed: %s", exc)
-        try:
-            await ws.send_json({"type": "error", "reason": "supervisor_failed"})
-        except Exception:
-            pass
-        await ws.close(code=4500, reason="Internal error")
-        reader_task.cancel()
-        return
+    except Exception:
+        logger.exception("Live WS supervisor failed")
+        supervisor_failed = True
     finally:
+        # Always drain the reader task; cancelling twice is a no-op so
+        # the single call covers both the happy path and the error one.
         stop_event.set()
+        reader_task.cancel()
+        try:
+            await reader_task
+        except asyncio.CancelledError:
+            pass
 
-    # Drain the reader task so the WS close on the next line does not
-    # race with a pending receive.
-    reader_task.cancel()
+    closing_message = (
+        {"type": "error", "reason": "supervisor_failed"}
+        if supervisor_failed
+        else {"type": "session_ended"}
+    )
     try:
-        await reader_task
-    except asyncio.CancelledError:
-        pass
-
-    try:
-        await ws.send_json({"type": "session_ended"})
+        await ws.send_json(closing_message)
     except Exception:
         pass
     try:
-        await ws.close()
+        if supervisor_failed:
+            await ws.close(code=4500, reason="Internal error")
+        else:
+            await ws.close()
     except Exception:
         pass
