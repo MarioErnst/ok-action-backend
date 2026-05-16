@@ -40,6 +40,7 @@ from typing import AsyncIterator
 
 from google import genai
 from google.genai import types
+from google.genai.live import AsyncSession
 
 from app.use_cases.live.streaming.live_prompt import build_live_streaming_prompt
 from app.use_cases.live.streaming.tools import (
@@ -87,7 +88,7 @@ class LiveStreamGeminiSession:
     def __init__(self, modules: list[LiveStreamModule]):
         self._modules = modules
         self._client = genai.Client(api_key=settings.gemini_api_key)
-        self._session: types.AsyncSession | None = None
+        self._session: AsyncSession | None = None
         self._session_cm = None
         # Single lock so concurrent chunk-forwarders cannot interleave
         # bytes in the WS frame. Live API expects whole audio blobs, not
@@ -203,7 +204,7 @@ class LiveStreamGeminiSession:
                 )
             )
 
-    def _require_session(self) -> types.AsyncSession:
+    def _require_session(self) -> AsyncSession:
         if self._session is None:
             raise RuntimeError("LiveStreamGeminiSession is not open")
         return self._session
