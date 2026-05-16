@@ -14,6 +14,7 @@ from app.presentation.routers.linguistic_versatility import (
     router as linguistic_versatility_router,
 )
 from app.presentation.routers.live import router as live_router
+from app.presentation.routers.live_ws import router as live_ws_router
 from app.presentation.routers.loudness import router as loudness_router
 from app.presentation.routers.muletillas import router as muletillas_router
 from app.presentation.routers.pauses import router as pauses_router
@@ -61,6 +62,7 @@ app.include_router(video_router, prefix="/api")
 app.include_router(profile_router, prefix="/api")
 
 app.include_router(live_router, prefix="/api")
+app.include_router(live_ws_router, prefix="/api")
 
 
 @app.get("/health")
