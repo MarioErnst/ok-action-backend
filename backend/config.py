@@ -24,6 +24,9 @@ class Settings(BaseSettings):
 
     # Gemini AI
     gemini_api_key: str
+    # Streaming live model. Pinned GA id, not an alias. The live session
+    # supervisor opens one WS to this model per active live session.
+    gemini_live_model: str = "gemini-live-2.5-flash-native-audio"
 
     # Backblaze B2 (S3-compatible storage)
     s3_bucket: str = "ok-actionbucket"
