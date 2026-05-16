@@ -1,12 +1,11 @@
 # Sesión Live (Composición) — Documentación Backend
 
-> El rediseño con sistema de strikes (endpoint `evaluate-frame` con pipeline
-> Gemini liviano por frame, `auto_stop_strikes` y `auto_stop_emotion` en
-> `StopReasonEnum`, módulo `consistency` reemplazado por `facial_expression`
-> en los composables) vive en [`live-strike-system.md`](./live-strike-system.md).
-> Este archivo describe el lifecycle de composición; los detalles del strike
-> system, prompts/streaming y persistencia de expresión facial van en el
-> documento del strike system.
+> Detección en tiempo real durante la sesión vía Gemini Live (function
+> calling, WS bidireccional) documentada en
+> [`live-strike-system.md`](./live-strike-system.md). El endpoint
+> `evaluate-frame` y el pipeline frame-by-frame fueron eliminados; los
+> strikes ahora viajan por la WS de live streaming. Este archivo cubre el
+> lifecycle de composición y el composed eval final, que siguen igual.
 
 ## 1. Descripción funcional
 
