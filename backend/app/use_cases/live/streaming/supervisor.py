@@ -45,6 +45,11 @@ from typing import Awaitable, Callable, Literal
 from app.infrastructure.ai.live_stream_assemblyai import (
     AssemblyAIStreamingSession,
 )
+from app.infrastructure.ai.muletillas_context_classifier_gemini import (
+    AmbiguousCandidate,
+    MuletillaContextClassifier,
+    MuletillaContextClassifierError,
+)
 from app.use_cases.live.streaming.muletillas_dictionary import (
     MuletillaMatch,
     extract_muletillas,
@@ -105,6 +110,7 @@ class LiveStreamSupervisor:
         self,
         modules: list[LiveStreamModule],
         strike_sink: StrikeSink,
+        context_classifier: MuletillaContextClassifier | None = None,
     ):
         if not modules:
             raise ValueError("supervisor requires at least one module")
@@ -115,14 +121,20 @@ class LiveStreamSupervisor:
             )
         self._modules = modules
         self._strike_sink = strike_sink
+        # Injectable for tests; production builds the default Gemini
+        # client lazily to avoid the API key check at module import.
+        self._context_classifier = context_classifier or MuletillaContextClassifier()
         self._receive_task: asyncio.Task | None = None
         # Session totals surfaced in the closing log so a single line at
         # the end of each session reports everything we care about for
         # diagnostics (chunks streamed, transcripts received, strikes
-        # emitted, strikes dropped by the sink).
+        # emitted, strikes dropped by sink, ambiguous matches dropped by
+        # the classifier, and classifier failures that forced a drop).
         self._transcripts_received = 0
         self._strikes_emitted = 0
         self._sink_errors = 0
+        self._ambiguous_dropped = 0
+        self._classifier_errors = 0
 
     async def run(self, audio_iter) -> None:
         """Drive the session until audio_iter ends or AssemblyAI dies.
@@ -170,11 +182,15 @@ class LiveStreamSupervisor:
                         pass
                 self._receive_task = None
                 logger.info(
-                    "[supervisor] finished (chunks_in=%d transcripts=%d strikes=%d sink_errors=%d)",
+                    "[supervisor] finished (chunks_in=%d transcripts=%d "
+                    "strikes=%d sink_errors=%d ambiguous_dropped=%d "
+                    "classifier_errors=%d)",
                     chunks_received,
                     self._transcripts_received,
                     self._strikes_emitted,
                     self._sink_errors,
+                    self._ambiguous_dropped,
+                    self._classifier_errors,
                 )
 
     async def _receive_loop(
@@ -190,26 +206,136 @@ class LiveStreamSupervisor:
             logger.info("[supervisor] receive loop ended")
 
     async def _process_transcript(self, transcript: str) -> None:
-        """Run the matcher and emit a strike per detected muletilla."""
+        """Run the matcher and emit a strike per detected muletilla.
 
+        Unambiguous matches go straight to the sink. Ambiguous ones are
+        batched into a single Gemini Flash-Lite call that confirms which
+        are real fillers in context; the rest are dropped. The hybrid
+        keeps zero LLM latency for the common interjections (eh, mmm,
+        ah, viste, digamos, o sea) and pays the LLM cost only when a
+        content-word filler like "tipo" or "este" appears.
+
+        Concurrency: the classifier runs in the background so the
+        unambiguous matches reach the client immediately while the LLM
+        decides on the ambiguous ones. The strike threshold on the
+        frontend is 1, so this lets the corten fire on the first 'eh'
+        without waiting ~1 s for an ambiguous 'tipo' that may share the
+        same turn.
+
+        We log per-stage timings so we can see real end-to-end latency
+        in production logs and tune the cutoff if it slows the corten
+        too much.
+        """
+
+        t_received = time.perf_counter()
         self._transcripts_received += 1
         matches = extract_muletillas(transcript)
+        t_matched = time.perf_counter()
+
         if not matches:
-            return
-        for match in matches:
-            event = self._build_event(match)
-            self._strikes_emitted += 1
             logger.info(
-                "[supervisor] STRIKE category=%s word=%r snippet=%r",
-                event.category,
-                event.word,
-                event.transcript_snippet,
+                "[supervisor] transcript processed (no matches, matcher_ms=%.0f)",
+                (t_matched - t_received) * 1000,
             )
+            return
+
+        unambiguous = [m for m in matches if not m.is_ambiguous]
+        ambiguous = [m for m in matches if m.is_ambiguous]
+
+        # Kick the classifier off before emitting unambiguous matches so
+        # the LLM round-trip overlaps with the WS sink for the common
+        # interjections.
+        classifier_task: asyncio.Task[set[int]] | None = None
+        t_clf_start: float | None = None
+        if ambiguous:
+            candidates = [
+                AmbiguousCandidate(
+                    index=i,
+                    word=m.word,
+                    context_snippet=m.context_snippet,
+                )
+                for i, m in enumerate(ambiguous)
+            ]
+            t_clf_start = time.perf_counter()
+            classifier_task = asyncio.create_task(
+                self._context_classifier.classify(transcript, candidates)
+            )
+
+        for match in unambiguous:
+            await self._emit_match(match)
+        t_unambiguous_done = time.perf_counter()
+
+        confirmed_ambiguous: list[MuletillaMatch] = []
+        classifier_ms: float | None = None
+        if classifier_task is not None and t_clf_start is not None:
             try:
-                await self._strike_sink(event)
-            except Exception as exc:
-                self._sink_errors += 1
-                logger.warning("[supervisor] strike sink raised: %s", exc)
+                confirmed_indices = await classifier_task
+            except MuletillaContextClassifierError as exc:
+                # Precision-first fallback: drop every ambiguous match so
+                # the user is never interrupted for a content word.
+                self._classifier_errors += 1
+                self._ambiguous_dropped += len(ambiguous)
+                classifier_ms = (time.perf_counter() - t_clf_start) * 1000
+                logger.warning(
+                    "[supervisor] classifier failed, dropping %d ambiguous "
+                    "matches: %s (classifier_ms=%.0f)",
+                    len(ambiguous),
+                    exc,
+                    classifier_ms,
+                )
+                confirmed_indices = set()
+            else:
+                classifier_ms = (time.perf_counter() - t_clf_start) * 1000
+
+            for index, match in enumerate(ambiguous):
+                if index in confirmed_indices:
+                    confirmed_ambiguous.append(match)
+                else:
+                    self._ambiguous_dropped += 1
+                    logger.info(
+                        "[supervisor] dropped ambiguous match word=%r snippet=%r",
+                        match.word,
+                        match.context_snippet,
+                    )
+
+        for match in confirmed_ambiguous:
+            await self._emit_match(match)
+        t_emitted = time.perf_counter()
+
+        # Single summary line per transcript so a tail -f gives a clear
+        # latency breakdown without spamming one log per stage.
+        logger.info(
+            "[supervisor] transcript processed "
+            "(matches=%d unambiguous=%d ambiguous=%d confirmed=%d "
+            "matcher_ms=%.0f unambiguous_emit_ms=%.0f classifier_ms=%s "
+            "total_ms=%.0f)",
+            len(matches),
+            len(unambiguous),
+            len(ambiguous),
+            len(confirmed_ambiguous),
+            (t_matched - t_received) * 1000,
+            (t_unambiguous_done - t_matched) * 1000,
+            f"{classifier_ms:.0f}" if classifier_ms is not None else "skipped",
+            (t_emitted - t_received) * 1000,
+        )
+
+    async def _emit_match(self, match: MuletillaMatch) -> None:
+        """Send one strike through the sink, accounting for sink errors."""
+
+        event = self._build_event(match)
+        self._strikes_emitted += 1
+        logger.info(
+            "[supervisor] STRIKE category=%s word=%r snippet=%r ambiguous=%s",
+            event.category,
+            event.word,
+            event.transcript_snippet,
+            match.is_ambiguous,
+        )
+        try:
+            await self._strike_sink(event)
+        except Exception as exc:
+            self._sink_errors += 1
+            logger.warning("[supervisor] strike sink raised: %s", exc)
 
     def _build_event(self, match: MuletillaMatch) -> StrikeEvent:
         return StrikeEvent(
