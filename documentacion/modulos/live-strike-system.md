@@ -29,16 +29,25 @@ que se mueven al composed-eval del cierre.
 
 ## 2. Alcance actual del strike system live
 
-| Módulo | Detección live | Detección al cierre (composed-eval) |
-|---|---|---|
-| `muletillas` | Sí, AssemblyAI + dictionary matcher | Igual a hoy |
-| `pronunciation` | No hay live-corten | Sí, composed-eval Gemini |
-| `accentuation` | No hay live-corten | Sí, composed-eval Gemini |
-| `facial_expression` | Sí, MediaPipe client-side (`useEmotionStop`) | Sí, payload `facial_summary` al cierre |
+| Módulo | Detección live | Auto-stop | Detección al cierre |
+|---|---|---|---|
+| `muletillas` | AssemblyAI + dictionary matcher | 1er strike (corte inmediato) | Persiste hija con métricas |
+| `facial_expression` | MediaPipe client-side (`useEmotionStop`) | 5s emoción negativa sostenida | Payload `facial_summary` |
+| `phonation` | AudioWorklet client-side (pitch / dB) | 5 breaks de pitch en ventana de 10s | Payload `phonation_summary` |
+| `loudness` | AudioWorklet client-side + classifier de banda | 3s continuos en banda `clipping` | Payload `loudness_summary` |
 
-`LiveStreamModule` queda limitado al literal `"muletillas"` tanto en el backend
-(`use_cases/live/streaming/supervisor.py`) como en el frontend
-(`infrastructure/dto/LiveStreamDtos.ts`).
+`pronunciation` y `accentuation` fueron retirados del set componible de live a
+favor de phonation/loudness; sus módulos standalone siguen funcionando en sus
+páginas dedicadas.
+
+### Stop reasons
+
+`StopReasonEnum` en BD expone los siguientes valores activos:
+- `user_stop`, `time_limit`, `error`, `completed` — históricos.
+- `auto_stop_strikes` — corte por muletilla detectada en vivo.
+- `auto_stop_emotion` — corte por emoción negativa sostenida.
+- `auto_stop_loudness` — corte por clipping continuo 3s (migración 0009).
+- `auto_stop_phonation` — corte por 5 breaks de pitch en 10s (migración 0009).
 
 ## 3. Estructura de directorios
 
