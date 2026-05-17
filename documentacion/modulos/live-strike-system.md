@@ -122,13 +122,16 @@ Configuración de la sesión (`StreamingParameters`):
 - `prompt=...` corto, en inglés, pidiendo verbatim español-latam + lista de
   muletillas a preservar.
 - `keyterms_prompt=[...]` con las muletillas como boost de keyterms.
-- `max_turn_silence=800` (ms). Forza el cierre del turn cuando hay 800 ms de
+- `max_turn_silence=400` (ms). Forza el cierre del turn cuando hay 400 ms de
   silencio aunque el detector inteligente de fin de turno no llegue a su
   umbral de confianza. El default de servidor (~2400 ms) era demasiado largo
-  para nuestro caso: un usuario que habla fluidamente sin pausas largas no
-  generaba turns intermedios y la primera muletilla recién aparecía en el
-  único turn final emitido al cerrar la sesión, demasiado tarde para
-  disparar el corten en vivo.
+  y la primera prueba con 800 ms tampoco alcanzó: un usuario hablando 20 s
+  seguidos sin pausas largas no generaba turns intermedios.
+- `end_of_turn_confidence_threshold=0.4` (default 0.7). Relaja el umbral
+  prosódico que el detector inteligente necesita para cerrar un turn por
+  cuenta propia. Combinado con el `max_turn_silence` más bajo, maximiza la
+  emisión de turns intermedios para que el corten pueda disparar a mitad de
+  un discurso fluido.
 
 El wrapper solo expone `iter_final_transcripts()` para el supervisor; los
 partials se ignoran porque AssemblyAI corrige el partial conforme gana
@@ -230,7 +233,7 @@ Sesión saludable (con un ambiguo descartado por el classifier):
 [live-ws] start ok modules=['muletillas']
 [live-ws] sent ready, starting supervisor
 [supervisor] starting (modules=['muletillas'])
-[live-assemblyai] opening Streaming WS (model=u3-rt-pro, sample_rate=16000, max_turn_silence=800ms)
+[live-assemblyai] opening Streaming WS (model=u3-rt-pro, sample_rate=16000, max_turn_silence=400ms, end_of_turn_confidence_threshold=0.40)
 [live-assemblyai] Streaming WS opened
 [supervisor] receive loop started
 [live-assemblyai] turn final: 'No voy a decir ningún tipo de muletillas, mmm'

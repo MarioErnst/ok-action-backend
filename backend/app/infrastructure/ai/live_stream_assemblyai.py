@@ -60,14 +60,21 @@ _SAMPLE_RATE = 16_000
 
 # Maximum silence (ms) before AssemblyAI is forced to close a turn even
 # when the smart detector has not reached its confidence threshold. The
-# server default is ~2400 ms, which is fine for transcription but bad
-# for our use case: a fluent speaker who never pauses for two seconds
-# keeps the strike pipeline waiting until the session ends, so
-# muletillas dropped mid-discourse never trigger the live corten. With
-# 800 ms the corten fires roughly one second after any natural breath
-# in the speech — still well below conversational fluidity but tight
-# enough to react to the first filler.
-_MAX_TURN_SILENCE_MS = 800
+# server default is ~2400 ms; we tightened it to 400 ms because real
+# users speak fluently without long pauses and the previous 800 ms
+# value still let the smart detector wait through a full 20 s discourse
+# before closing the first turn. With 400 ms any short breath closes
+# a turn and the corten reacts within ~1 s of the first filler.
+_MAX_TURN_SILENCE_MS = 400
+
+
+# Confidence the smart detector must reach (0-1) to close a turn on its
+# own. The server default is ~0.7; we relaxed it to 0.4 so the detector
+# also closes on lower-confidence prosodic boundaries (e.g. a hesitation
+# followed by a content word). Combined with the lower max_turn_silence
+# this maximizes the chance of emitting an intermediate turn while the
+# user is still speaking.
+_END_OF_TURN_CONFIDENCE_THRESHOLD = 0.4
 
 
 # Prompt steers the model into verbatim Spanish (Latin American). The
@@ -139,12 +146,15 @@ class AssemblyAIStreamingSession:
             prompt=_LIVE_PROMPT,
             keyterms_prompt=_KEYTERMS,
             max_turn_silence=_MAX_TURN_SILENCE_MS,
+            end_of_turn_confidence_threshold=_END_OF_TURN_CONFIDENCE_THRESHOLD,
         )
         logger.info(
-            "[live-assemblyai] opening Streaming WS (model=%s, sample_rate=%d, max_turn_silence=%dms)",
+            "[live-assemblyai] opening Streaming WS (model=%s, sample_rate=%d, "
+            "max_turn_silence=%dms, end_of_turn_confidence_threshold=%.2f)",
             _MODEL,
             _SAMPLE_RATE,
             _MAX_TURN_SILENCE_MS,
+            _END_OF_TURN_CONFIDENCE_THRESHOLD,
         )
         # connect() is a blocking handshake; offload to a worker thread
         # so the event loop keeps serving other tasks.
