@@ -201,10 +201,10 @@ class LiveStreamGeminiSession:
             for fc in function_calls:
                 args = dict(fc.args) if fc.args else {}
                 logger.info(
-                    "[live-gemini] tool call received: name=%s id=%s args_keys=%s",
+                    "[live-gemini] tool call received: name=%s id=%s args=%s",
                     fc.name,
                     fc.id,
-                    list(args.keys()),
+                    args,
                 )
                 yield LiveToolCall(id=fc.id or "", name=fc.name or "", args=args)
 

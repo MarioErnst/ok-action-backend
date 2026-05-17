@@ -1,7 +1,19 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Uvicorn configures its own access/error loggers but leaves the root
+# logger unhandled, which silently drops every `logger.info(...)` we
+# emit from app modules. Adding a basic root handler at INFO level
+# surfaces the live streaming pipeline logs (and any other module that
+# uses `logging.getLogger(__name__)`) without changing the uvicorn
+# defaults.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 from app.infrastructure.db.session import check_db_connection, dispose_connector
 from app.presentation.routers.accentuation import router as accentuation_router

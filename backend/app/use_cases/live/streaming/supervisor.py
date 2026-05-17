@@ -115,12 +115,26 @@ class LiveStreamSupervisor:
         async with gemini.open() as g:
             self._gemini = g
             self._receive_task = asyncio.create_task(self._receive_loop(g))
+            chunks_received = 0
+            bytes_received = 0
             try:
                 async for chunk in audio_iter:
                     if not chunk:
                         continue
+                    chunks_received += 1
+                    bytes_received += len(chunk)
+                    if chunks_received in (1, 10, 100, 1000) or chunks_received % 500 == 0:
+                        logger.info(
+                            "[supervisor] forwarded %d chunks / %d bytes from client",
+                            chunks_received,
+                            bytes_received,
+                        )
                     await g.send_audio_chunk(chunk)
-                logger.info("[supervisor] audio iterator drained, signaling end")
+                logger.info(
+                    "[supervisor] audio iterator drained after %d chunks / %d bytes, signaling end",
+                    chunks_received,
+                    bytes_received,
+                )
                 # Tell the model the user stopped pushing audio so it
                 # flushes any pending evaluation before we tear down.
                 await g.signal_audio_end()
@@ -138,6 +152,13 @@ class LiveStreamSupervisor:
     async def _receive_loop(self, gemini: LiveStreamGeminiSession) -> None:
         """Pull tool calls from Gemini and forward valid strikes."""
 
+        logger.info("[supervisor] receive loop started")
+        try:
+            await self._consume_tool_calls(gemini)
+        finally:
+            logger.info("[supervisor] receive loop ended")
+
+    async def _consume_tool_calls(self, gemini: LiveStreamGeminiSession) -> None:
         async for call in gemini.iter_tool_calls():
             try:
                 event = self._normalize_call(call)
@@ -158,10 +179,12 @@ class LiveStreamSupervisor:
                 continue
 
             logger.info(
-                "[supervisor] strike emitted category=%s word=%r severity=%s",
+                "[supervisor] STRIKE category=%s word=%r severity=%s snippet=%r received_at_ms=%d",
                 event.category,
                 event.word,
                 event.severity,
+                event.transcript_snippet,
+                event.received_at_ms,
             )
             try:
                 await self._strike_sink(event)
