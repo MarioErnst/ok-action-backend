@@ -25,11 +25,16 @@ class Settings(BaseSettings):
     # Gemini AI
     gemini_api_key: str
     # Streaming live model id for the Gemini Developer API (api_key).
-    # The "GA" id `gemini-live-2.5-flash-native-audio` exists only on
-    # Vertex AI; the Developer API exposes the same underlying model
-    # as a date-pinned preview. We pin to the 12-2025 build instead of
-    # the `*-latest` alias to comply with the no-aliases rule.
-    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    # We use 3.1-flash-live-preview because the 2.5-flash-native-audio
+    # variants currently expose a confirmed Google bug where function
+    # calling causes 1011 internal-error disconnects mid-stream (see
+    # python-genai issue #1832 and the discuss.ai.google.dev thread on
+    # "Repeated 1011 Internal error encountered on
+    # gemini-2.5-flash-native-audio-preview-12-2025"). 3.1 supports
+    # synchronous tool calling which is what our supervisor already
+    # does (ack each call before continuing), and Google recommends it
+    # for new low-latency voice builds.
+    gemini_live_model: str = "gemini-3.1-flash-live-preview"
 
     # Backblaze B2 (S3-compatible storage)
     s3_bucket: str = "ok-actionbucket"
