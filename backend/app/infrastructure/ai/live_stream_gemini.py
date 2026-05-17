@@ -109,6 +109,16 @@ class LiveStreamGeminiSession:
         # every server message except tool calls in iter_tool_calls();
         # the system prompt asks the model to stay silent so the
         # emitted audio should be a short greeting at most.
+        #
+        # Aggressive VAD is critical for our use-case. With the default
+        # end-of-speech sensitivity the model would buffer tool calls
+        # until the student paused for ~1 s of silence; if the student
+        # talks continuously for 20 s the corten arrives 20 s late,
+        # which defeats the whole point. We push end_of_speech to HIGH
+        # and silence_duration_ms to 300 so natural between-phrase
+        # pauses (which last ~200-500 ms in spontaneous Spanish)
+        # already count as end-of-turn and force the model to flush
+        # any pending tool calls.
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
             system_instruction=build_live_streaming_prompt(self._modules),
@@ -125,6 +135,13 @@ class LiveStreamGeminiSession:
             # positives in a teaching tool where every cut interrupts the
             # student.
             temperature=0.3,
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    silence_duration_ms=300,
+                    prefix_padding_ms=0,
+                ),
+            ),
         )
         logger.info(
             "[live-gemini] opening Live WS (model=%s, modules=%s)",
