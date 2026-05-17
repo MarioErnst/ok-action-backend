@@ -133,15 +133,31 @@ Config de la sesión:
   pide silencio así que el audio emitido tiende a ser un saludo corto a
   lo sumo.
 - `system_instruction = build_live_streaming_prompt(modules)`.
-- `realtime_input_config.automatic_activity_detection` con
-  `end_of_speech_sensitivity=HIGH`, `silence_duration_ms=300`,
-  `prefix_padding_ms=0`. El default de Gemini Live espera ~1 s de
-  silencio para marcar fin de turno y procesar herramientas. Con un
-  alumno que habla 20 s seguidos sin pausa larga, los tool calls
-  quedan buffer-eados hasta el cierre del WS y el "corten" llega
-  irremediablemente tarde. Forzando el VAD agresivo, cualquier pausa
-  natural entre frases (200-500 ms en español espontáneo) ya cuenta
-  como end-of-turn y dispara la emisión de strikes en near-real-time.
+- `realtime_input_config` con VAD automático **deshabilitado** y
+  control manual de actividad. El default de Gemini Live espera a que
+  el usuario haga silencio para marcar fin de turno y procesar
+  herramientas; un alumno que habla 20 s seguidos sin pausa no recibe
+  ningún strike hasta que cierra la WS. El VAD "agresivo" tampoco
+  resolvió el problema en la práctica. La solución es deshabilitar
+  el detector y dejar que el supervisor envíe pulsos
+  `activity_end → activity_start` cada `_ACTIVITY_PULSE_SECONDS`
+  (default 2 s) para forzar al modelo a evaluar y emitir tool calls.
+  `activity_handling=NO_INTERRUPTION` evita que el siguiente turn
+  corte tool calls en vuelo, y `turn_coverage=TURN_INCLUDES_ALL_INPUT`
+  asegura que el audio entre pulsos no se pierda.
+
+  Costo: el modelo procesa un "turn" cada 2 s, lo que multiplica el
+  uso de tokens vs el modo conversacional natural. A cambio bajamos
+  la latencia del corten de 15-20 s (turno completo) a 2-3 s.
+
+  Riesgo conocido: cuando el modelo recibe un `activity_end` sin
+  audio relevante en el turn, puede alucinar un tool call coherente
+  (incluyendo `transcript_snippet` plausible). El filtro anti-
+  alucinación basado en longitud de snippet **no** detecta esto. En
+  producción con audio real es raro, pero si los falsos positivos
+  pasan a ser un problema, el plan es agregar VAD local en el cliente
+  y pulsar `activity_end` solo cuando el cliente detecte silencio
+  real, en vez de un timer ciego.
 - `tools = [Tool(function_declarations=[FunctionDeclaration(**decl) for decl in build_tools_for_modules(modules)])]`.
 - `temperature = 0.3` para limitar falsos positivos.
 
