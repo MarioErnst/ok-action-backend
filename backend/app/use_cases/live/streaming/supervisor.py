@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import struct
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
@@ -66,6 +68,24 @@ _VALID_SEVERITIES = frozenset({"low", "medium", "high"})
 # that needs sub-3-second corten without flooding the model with
 # end-of-turn signals.
 _ACTIVITY_PULSE_SECONDS = 2.0
+
+
+# RMS threshold over PCM16 samples to consider a chunk as "speech".
+# Pure silence sits around 0; ambient mic noise around 50-150; a
+# spoken syllable easily reaches 500-3000. 200 is loose enough to
+# accept soft speech and tight enough to reject room noise.
+_SPEECH_RMS_THRESHOLD = 200
+
+
+def _chunk_rms(chunk: bytes) -> float:
+    """RMS of a PCM16 mono little-endian byte chunk."""
+
+    sample_count = len(chunk) // 2
+    if sample_count == 0:
+        return 0.0
+    samples = struct.unpack(f"<{sample_count}h", chunk[: sample_count * 2])
+    sum_sq = sum(s * s for s in samples)
+    return math.sqrt(sum_sq / sample_count)
 
 
 @dataclass(frozen=True)
@@ -105,6 +125,12 @@ class LiveStreamSupervisor:
         self._strike_sink = strike_sink
         self._gemini: LiveStreamGeminiSession | None = None
         self._receive_task: asyncio.Task | None = None
+        # Flag flipped on by the audio iterator each time a loud-enough
+        # chunk arrives, flipped off by the pulser each time it pulses.
+        # The pulser uses it to skip activity_end when the user has
+        # been silent for the whole interval, which is what prevents
+        # the model from hallucinating tool calls during silence.
+        self._speech_seen_since_last_pulse = False
 
     async def run(self, audio_iter) -> None:
         """Drive the session until either audio_iter ends or Gemini dies.
@@ -142,6 +168,8 @@ class LiveStreamSupervisor:
                         continue
                     chunks_received += 1
                     bytes_received += len(chunk)
+                    if _chunk_rms(chunk) > _SPEECH_RMS_THRESHOLD:
+                        self._speech_seen_since_last_pulse = True
                     if chunks_received in (1, 10, 100, 1000) or chunks_received % 500 == 0:
                         logger.info(
                             "[supervisor] forwarded %d chunks / %d bytes from client",
@@ -181,9 +209,18 @@ class LiveStreamSupervisor:
         gemini: LiveStreamGeminiSession,
         stop_event: asyncio.Event,
     ) -> None:
-        """Pulse activity_end -> activity_start every N seconds."""
+        """Pulse activity_end -> activity_start when the user spoke.
+
+        Skips the pulse entirely when no speech was heard since the
+        previous pulse. Pulsing during pure silence forces the model
+        to "respond" anyway and it hallucinates tool calls (we saw it
+        invent muletillas and accentuation errors out of thin air).
+        Only firing the pulse when there is real audio to evaluate
+        keeps the model honest.
+        """
 
         pulse_count = 0
+        skip_count = 0
         try:
             while not stop_event.is_set():
                 try:
@@ -193,7 +230,15 @@ class LiveStreamSupervisor:
                     return
                 except asyncio.TimeoutError:
                     pass
+                if not self._speech_seen_since_last_pulse:
+                    skip_count += 1
+                    logger.info(
+                        "[supervisor] skipping pulse #%d (silence)",
+                        pulse_count + skip_count,
+                    )
+                    continue
                 pulse_count += 1
+                self._speech_seen_since_last_pulse = False
                 logger.info("[supervisor] activity pulse #%d", pulse_count)
                 try:
                     await gemini.send_activity_end()
@@ -204,7 +249,11 @@ class LiveStreamSupervisor:
                     )
                     return
         finally:
-            logger.info("[supervisor] activity pulser stopped after %d pulses", pulse_count)
+            logger.info(
+                "[supervisor] activity pulser stopped after %d pulses (skipped %d during silence)",
+                pulse_count,
+                skip_count,
+            )
 
     async def _receive_loop(self, gemini: LiveStreamGeminiSession) -> None:
         """Pull tool calls from Gemini and forward valid strikes."""
