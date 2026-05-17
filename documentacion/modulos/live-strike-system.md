@@ -1,300 +1,206 @@
 # Sistema de Strikes en Sesión Live — Backend
 
-A partir de la branch `feature/live_corten` (mayo 2026), el strike system se basa
-en una conexión WebSocket bidireccional contra Gemini Live (`gemini-3.1-flash-live-preview`)
-con function calling. Cada strike corresponde a UN tool call que el modelo emite
-mientras escucha el audio del usuario en streaming. El umbral en el frontend pasa
-a **1 strike = corten inmediato**.
+A partir de la branch `feature/live_assemblyai_muletillas` (mayo 2026), el
+strike system de la sesión live se basa en transcripción literal con
+**AssemblyAI Universal-3 Pro Streaming** (`u3-rt-pro`) más un matcher contra
+diccionario de muletillas en español. El supervisor consume final transcripts,
+busca tokens del diccionario y emite **un strike por cada muletilla detectada**.
+El umbral en el frontend sigue siendo **1 strike = corten inmediato**.
 
-La feature comparte nombre con la documentación frontend (`live-strike-system.md`).
-Este archivo cubre solo los cambios backend.
+Este archivo cubre solo los cambios backend; el lado frontend vive con el mismo
+nombre en `ok-action-frontend/documentacion/modulos/live-strike-system.md`.
 
-## 1. Cambios funcionales respecto al pipeline anterior
+## 1. Por qué AssemblyAI reemplazó a Gemini Live
 
-| Aspecto | Antes (frame eval HTTP) | Ahora (Gemini Live WS) |
+| Aspecto | Gemini Live + function tools | AssemblyAI Universal-3 Pro Streaming |
 |---|---|---|
-| Transporte | HTTP multipart por cada frame de 5-8s | WebSocket único por sesión, audio streaming continuo |
-| Modelo | `gemini-2.5-flash` con response_schema | `gemini-3.1-flash-live-preview` con function tools |
-| Detección | JSON estructurado por frame | Function call por error detectado (latencia sub-segundo) |
-| Umbral strike | 2 strikes por categoría | 1 strike por categoría |
-| Persistencia en vivo | Ninguna (frame eval era stateless) | Ninguna (los strikes son ephemeral) |
+| Naturaleza del modelo | Generativo conversacional | Transcriptor verbatim |
+| Forma de detección | Tool calls predichos del audio | Tokens en el transcript matcheados contra diccionario |
+| Riesgo de alucinación | Alto — completa patrones esperados | Nulo — solo reporta lo escuchado |
+| Latencia | 2-3 s por pulse forzado | 1-2 s por turn final natural |
+| Idioma | Español aceptable | Español nativo, prompt `Transcribe Spanish (Latin American) verbatim` |
+| Costo aprox / hora | ~$0.45 / hora de WS | ~$0.45 / hora de WS |
 
-La detección facial (`facial_expression`) sigue 100% en cliente con MediaPipe.
-El composed eval final (`POST /live/sessions/{id}/audio-evaluation`) sigue siendo
-la única fuente de verdad para las hijas en BD; los strikes nunca se persisten.
+El intento previo con Gemini Live (en `feature/live_corten`) confirmó por
+experiencia que el modelo inventaba muletillas para "satisfacer" turnos forzados
+de actividad. AssemblyAI elimina esa clase entera de falso positivo a cambio de
+perder la capacidad de detectar errores de pronunciación/acentuación en vivo —
+que se mueven al composed-eval del cierre.
 
-## 2. Cambios en BD
+## 2. Alcance actual del strike system live
 
-Ninguno. El strike system es ephemeral. No hay migración asociada a esta versión.
+| Módulo | Detección live | Detección al cierre (composed-eval) |
+|---|---|---|
+| `muletillas` | ✅ AssemblyAI + dictionary matcher | Igual a hoy |
+| `pronunciation` | ❌ no hay live-corten | ✅ composed-eval Gemini |
+| `accentuation` | ❌ no hay live-corten | ✅ composed-eval Gemini |
+| `facial_expression` | ✅ MediaPipe client-side (`useEmotionStop`) | ✅ payload `facial_summary` al cierre |
 
-`StopReasonEnum` mantiene `user_stop`, `time_limit`, `error`, `completed`,
-`auto_stop_strikes`, `auto_stop_emotion`. La diferencia es que ahora
-`auto_stop_strikes` se dispara con 1 strike en cualquier categoría.
+`LiveStreamModule` queda limitado al literal `"muletillas"` tanto en el backend
+(`use_cases/live/streaming/supervisor.py`) como en el frontend
+(`infrastructure/dto/LiveStreamDtos.ts`).
 
 ## 3. Estructura de directorios
 
 ```
 app/use_cases/live/
-├── sessions.py                ← lifecycle existente (start, finalize, abandon)
-├── composed/                  ← evaluación final (intacto)
-│   ├── prompts.py
-│   ├── schemas.py
-│   └── persist.py
-└── streaming/                 ← REEMPLAZADO
+├── sessions.py                    ← lifecycle existente
+├── composed/                      ← intacto, sigue evaluando pron/acc al cierre
+└── streaming/
     ├── __init__.py
-    ├── tools.py               ← declaraciones de function tools por módulo
-    ├── live_prompt.py         ← system_instruction "evaluador silencioso"
-    └── supervisor.py          ← orquestador WS-a-WS con filtro anti-alucinación
+    ├── muletillas_dictionary.py   ← NUEVO: unigrams + bigrams + extract_muletillas()
+    └── supervisor.py              ← REEMPLAZADO: ahora consume transcripts de AssemblyAI
 
 app/infrastructure/ai/
-├── composed_live_gemini.py    ← intacto, sigue usando gemini-2.5-flash
-└── live_stream_gemini.py      ← NUEVO, wrapper async sobre client.aio.live.connect
+├── composed_live_gemini.py        ← intacto (composed-eval)
+└── live_stream_assemblyai.py      ← NUEVO: wrapper async del SDK assemblyai.streaming.v3
 
 app/presentation/routers/
-├── live.py                    ← endpoints HTTP del lifecycle (sin frame eval)
-└── live_ws.py                 ← NUEVO, endpoint WS /live/sessions/{id}/stream
+├── live.py                        ← intacto (lifecycle HTTP + composed-eval)
+└── live_ws.py                     ← intacto (mismo protocolo WS hacia el cliente)
 ```
 
-## 4. Protocolo WebSocket
+**Archivos eliminados** (vivían en `feature/live_corten` y desaparecen en esta
+branch): `infrastructure/ai/live_stream_gemini.py`,
+`use_cases/live/streaming/tools.py`, `use_cases/live/streaming/live_prompt.py`,
+y el setting `gemini_live_model` en `config.py`.
 
-`WS /api/live/sessions/{session_id}/stream?token=<JWT>`
+## 4. Protocolo WebSocket cliente↔backend
+
+Sin cambios. Es el mismo contrato que el supervisor anterior:
 
 ```
-client -> server: {"type": "start", "modules": ["muletillas", "pronunciation", ...]}
+client -> server: {"type": "start", "modules": ["muletillas"]}
 server -> client: {"type": "ready"}
-client -> server: <bytes>                            # raw 16 kHz mono PCM
-client -> server: {"type": "end"}                    # cierre voluntario
-server -> client: {"type": "strike", "category": "muletillas", "word": "este",
-                    "transcript_snippet": "...", "severity": "low",
-                    "received_at_ms": 1736000000123}
+client -> server: <bytes>                            # PCM16 16 kHz mono
+client -> server: {"type": "end"}
+server -> client: {"type": "strike", "category": "muletillas",
+                    "word": "este", "transcript_snippet": "ahora este es",
+                    "severity": "low", "received_at_ms": 1737000123456}
 server -> client: {"type": "session_ended"}
 server: cierra WS
 ```
 
-Close codes:
-- `4001` Unauthorized (token inválido)
-- `4002` Expected start message (no llegó dentro de 10s)
-- `4003` Invalid parameters (modules vacío/inválido, session_id no es live activa)
-- `4500` Internal error (supervisor falló)
+El backend hoy solo emite `category=muletillas`. La narrowing del union en
+frontend asegura que cualquier consumidor sepa que un strike WS es siempre una
+muletilla.
 
-El cliente debe seguir enviando audio hasta que decida `end` o reciba un `strike`
-que dispare la lógica de corten en su lado. El backend no decide cuándo cortar;
-solo emite cada strike válido para que el frontend lo cuente.
+## 5. Diccionario de muletillas (`muletillas_dictionary.py`)
 
-## 5. Tools declarados (`streaming/tools.py`)
+- `SPANISH_FILLER_UNIGRAMS`: conjunto de tokens lowercase que siempre cuentan
+  (`eh`, `ehh`, `este`, `esto`, `esta`, `mmm`, `ah`, `viste`, `tipo`, `pues`,
+  `digamos`, etc.).
+- `SPANISH_FILLER_BIGRAMS`: pares consecutivos (`("o", "sea")`, `("o", "sé")`).
+- `extract_muletillas(transcript) -> list[MuletillaMatch]`: tokeniza con regex
+  Unicode, prioriza bigrams sobre unigrams cuando se solapan, devuelve cada
+  occurrence con `word`, `start_char`, `end_char` y `context_snippet`.
 
-Tres function declarations, cada una con `transcript_snippet` y `severity`
-requeridos. Registry indexado por módulo + reverse lookup nombre→módulo:
+La lista es deliberadamente conservadora. Se editan los conjuntos cuando los
+logs muestren falsos positivos o pérdidas reales en sesiones de prueba.
 
-| Tool name | Módulo | Args principales |
-|---|---|---|
-| `flag_muletilla` | muletillas | `word`, `transcript_snippet`, `severity` |
-| `flag_pronunciation_error` | pronunciation | `word`, `phoneme`, `actual_issue`, `suggestion`, `transcript_snippet`, `severity` |
-| `flag_accentuation_error` | accentuation | `word`, `expected_stress`, `actual_issue`, `suggestion`, `transcript_snippet`, `severity` |
+## 6. Wrapper AssemblyAI (`infrastructure/ai/live_stream_assemblyai.py`)
 
-`build_tools_for_modules(modules)` arma la lista en orden canónico para que el
-payload a Gemini sea estable. Agregar un módulo nuevo = una entrada en el
-registry y una sección en `live_prompt.py`.
+Envuelve el SDK síncrono `assemblyai.streaming.v3.StreamingClient` con dos
+patrones:
+- `asyncio.to_thread(...)` para no bloquear el event loop en `connect`, `stream`
+  y `disconnect`.
+- `asyncio.Queue` + `loop.call_soon_threadsafe(...)` para marshallear los
+  callbacks (que llegan en threads del SDK) al supervisor async.
 
-## 6. System prompt (`streaming/live_prompt.py`)
+Configuración de la sesión (`StreamingParameters`):
+- `speech_model="u3-rt-pro"` (Universal-3 Pro Streaming).
+- `sample_rate=16000`.
+- `prompt=...` corto, en inglés, pidiendo verbatim español-latam + lista de
+  muletillas a preservar.
+- `keyterms_prompt=[...]` con las muletillas como boost de keyterms.
 
-Tres reglas duras le indican al modelo:
+El wrapper solo expone `iter_final_transcripts()` para el supervisor; los
+partials se ignoran porque AssemblyAI corrige el partial conforme gana
+contexto y dispararíamos strikes que después se "borraban".
 
-1. Solo emitir tool calls. Nunca audio. Nunca texto.
-2. `transcript_snippet` debe contener 5-12 palabras realmente escuchadas. Calls
-   sin snippet o con snippet menor a 4 caracteres se descartan en el supervisor.
-3. No inferir errores que no se escucharon. Modelo debe quedarse en silencio si
-   no hay nada que reportar.
+**Cierre crítico**: `aclose()` siempre llama `disconnect(terminate=True)` para
+emitir el mensaje `Terminate`. Una sesión abandonada sigue facturando hasta el
+cap de 3 horas de AssemblyAI; el `async with` del `open()` garantiza el cierre
+limpio aunque haya excepciones.
 
-El prompt se reconstruye por sesión a partir de la lista de módulos
-seleccionados, así el modelo solo ve las tools que están wireadas.
+## 7. Supervisor (`use_cases/live/streaming/supervisor.py`)
 
-## 7. Cliente Gemini Live (`infrastructure/ai/live_stream_gemini.py`)
+`LiveStreamSupervisor(modules=["muletillas"], strike_sink).run(audio_iter)`.
 
-Wrapper async sobre `client.aio.live.connect`. Una instancia = una WS abierta por
-toda la duración de la sesión live.
+Estructura simplificada respecto a la versión con Gemini Live:
+- Tarea principal: consume `audio_iter` y reenvía cada chunk PCM al wrapper.
+- Tarea de fondo: itera `iter_final_transcripts()`, corre el matcher y emite
+  `StrikeEvent` por cada match.
+- No hay pulser, no hay VAD propio, no hay filtros de severidad ni de snippet.
+  AssemblyAI ya hace el trabajo de detectar speech y formatear turns.
 
-Métodos:
-- `open()` retorna un async context manager que entra/sale el WS limpio.
-- `send_audio_chunk(pcm_bytes)` reenvía un blob PCM al modelo. Lock interno para
-  serializar sends.
-- `signal_audio_end()` notifica al modelo que el usuario dejó de hablar.
-- `iter_tool_calls()` async generator que itera tool calls recibidos. Mensajes
-  de texto del modelo se ignoran (response_modalities = TEXT pero el prompt pide
-  silencio; cualquier texto se descarta).
-- `ack_tool_call(call)` envía FunctionResponse vacío para que el modelo avance.
+`StrikeEvent` queda como dataclass con `category`, `word`, `transcript_snippet`,
+`severity` (siempre `"low"` por ahora) y `received_at_ms`. El sink del router
+serializa este event como JSON al cliente sin cambios.
 
-Config de la sesión:
-- `response_modalities = [Modality.AUDIO]`. Los modelos Live de la Gemini
-  Developer API (la que se usa con `api_key`) rechazan TEXT como única
-  modalidad — solo Vertex AI ofrece la variante half-cascade que sí lo
-  permite. Pedimos AUDIO y descartamos todo el output del modelo en
-  `iter_tool_calls` (solo yield-eamos `tool_call`); el system prompt
-  pide silencio así que el audio emitido tiende a ser un saludo corto a
-  lo sumo.
-- `system_instruction = build_live_streaming_prompt(modules)`.
-- `realtime_input_config` con VAD automático **deshabilitado** y
-  control manual de actividad. El default de Gemini Live espera a que
-  el usuario haga silencio para marcar fin de turno y procesar
-  herramientas; un alumno que habla 20 s seguidos sin pausa no recibe
-  ningún strike hasta que cierra la WS. El VAD "agresivo" tampoco
-  resolvió el problema en la práctica. La solución es deshabilitar
-  el detector y dejar que el supervisor envíe pulsos
-  `activity_end → activity_start` cada `_ACTIVITY_PULSE_SECONDS`
-  (default 2 s) para forzar al modelo a evaluar y emitir tool calls.
-  `activity_handling=NO_INTERRUPTION` evita que el siguiente turn
-  corte tool calls en vuelo, y `turn_coverage=TURN_INCLUDES_ALL_INPUT`
-  asegura que el audio entre pulsos no se pierda.
+## 8. Logging diagnóstico
 
-  Costo: el modelo procesa un "turn" cada 2 s, lo que multiplica el
-  uso de tokens vs el modo conversacional natural. A cambio bajamos
-  la latencia del corten de 15-20 s (turno completo) a 2-3 s.
-
-  Mitigación de alucinaciones: el supervisor calcula el RMS de cada
-  chunk PCM16 que llega del cliente y solo pulsa `activity_end` si
-  algún chunk del intervalo superó `_SPEECH_RMS_THRESHOLD` (200).
-  Cuando el alumno está callado durante el intervalo el pulse se
-  saltea y el modelo no es forzado a "responder" sobre silencio, lo
-  cual elimina la mayoría de las alucinaciones que aparecían con un
-  pulser ciego basado en timer. Los pulses skipeados se loguean como
-  `[supervisor] skipping pulse #N (silence)`.
-
-  Si en producción aparecen alucinaciones cuando el alumno habla en
-  voz muy baja (RMS bajo, threshold inflado), bajar
-  `_SPEECH_RMS_THRESHOLD` o reemplazar el threshold fijo por un
-  detector relativo al noise floor calibrado al inicio de la sesión.
-- `tools = [Tool(function_declarations=[FunctionDeclaration(**decl) for decl in build_tools_for_modules(modules)])]`.
-- `temperature = 0.3` para limitar falsos positivos.
-
-Sin retry. Si la WS de Gemini cae, el supervisor propaga el error y el router
-cierra la WS del cliente con 4500. Reintentar adentro del wrapper escondería
-fallas que el frontend tiene que manejar.
-
-## 8. Supervisor (`streaming/supervisor.py`)
-
-`LiveStreamSupervisor(modules, strike_sink).run(audio_iter)` corre la sesión.
-
-Estructura:
-- Tarea 1: consume `audio_iter` (proviene del WS del cliente, ver router) y
-  reenvía cada chunk al wrapper Gemini.
-- Tarea 2 (en background): itera `gemini.iter_tool_calls()`. Por cada call:
-  1. Mapea `name` → categoría via `TOOL_NAME_TO_MODULE`. Si no matchea, ack y descarta.
-  2. Filtro anti-alucinación: `transcript_snippet` debe tener ≥ 4 caracteres y
-     `word` no vacío. Si falla, ack y descarta.
-  3. Severity default a `"low"` si viene fuera del enum.
-  4. Construye `StrikeEvent` y lo emite vía `strike_sink`.
-  5. Ack siempre, incluso si dropeamos el strike.
-
-`StrikeEvent` lleva: `category`, `word`, `transcript_snippet`, `severity`,
-`received_at_ms`. El router lo serializa al WS del cliente.
-
-El supervisor no escribe en BD. Es transporte + filtro.
-
-## 9. Router (`presentation/routers/live_ws.py`)
-
-`@router.websocket("/live/sessions/{session_id}/stream")` registrado bajo
-`/api`. Auth: `authenticate_ws(token, db)` igual que `fluency.py`.
-
-Flujo:
-1. Accept WS.
-2. Auth con token del query string.
-3. Recibe start message (10s timeout). Valida `modules`.
-4. `validate_parent_live_session(db, user, session_id)` para confirmar que el
-   `session_id` apunta a una live activa del user.
-5. Crea `asyncio.Queue` bounded (64 chunks ≈ 3s slack); drop oldest si se llena.
-6. Spawnea `read_client()` task que copia bytes del WS al queue, hasta que
-   llega `{"type": "end"}` o disconnect.
-7. Manda `{"type": "ready"}`.
-8. Corre `supervisor.run(audio_iter)` donde `audio_iter` consume el queue.
-9. Cleanup: cancela el reader, manda `session_ended`, cierra WS.
-
-Errores propagan a `4500 Internal error`. Disconnect del cliente cierra la
-sesión Gemini limpio gracias al `async with` del wrapper.
-
-## 10. Decisiones de diseño
-
-- **Threshold 1 strike**: el rationale es pedagógico — si el modelo detecta un
-  error real, el "corten" tiene que llegar inmediato para que el alumno asocie
-  el error con su acción. El falso positivo es el riesgo conocido; lo
-  amortizamos con el filtro `transcript_snippet` y `severity` explícita.
-
-- **`transcript_snippet` como contrato anti-alucinación**: el modelo está
-  obligado por el prompt a citar audio real. El supervisor descarta cualquier
-  call sin snippet. Es la versión streaming del contrato `transcript` del
-  composed eval anterior.
-
-- **Sin persistencia de strikes**: los datos longitudinales viven en el
-  composed eval que ya corría al cerrar la sesión. Persistir strikes
-  duplicaría tablas y rompería la regla CLAUDE.md de "no campos free-text
-  generados por LLM en BD" (los `transcript_snippet` y `suggestion` son
-  exactamente eso).
-
-- **Modelo: `gemini-3.1-flash-live-preview`**. La Developer API solo
-  expone los modelos Live como preview; el GA real
-  (`gemini-live-2.5-flash-native-audio`) existe solo en Vertex AI.
-  Originalmente apuntamos a
-  `gemini-2.5-flash-native-audio-preview-12-2025`, pero ese modelo
-  expone un bug confirmado de Google: function calling provoca
-  desconexiones `1011 internal error` mid-stream (python-genai issue
-  #1832 y foro discuss.ai.google.dev sobre "Repeated 1011 Internal
-  error" en preview-12-2025). 3.1-flash-live-preview soporta tool
-  calling sincrónico (que es exactamente lo que el supervisor hace:
-  ack por cada call antes de continuar) y es el modelo que Google
-  recomienda para nuevas builds de voice agents. Cumple la regla
-  CLAUDE.md de evitar `*-latest`. Para cambiar a un GA futuro basta
-  con tocar `settings.gemini_live_model`.
-
-- **Tools son declaraciones agnósticas del SDK**: `streaming/tools.py` exporta
-  diccionarios, no objetos genai. El wrapper los convierte a
-  `FunctionDeclaration` al abrir la WS. Esto permite testear sin importar el
-  SDK y agregar nuevos módulos sin tocar la integración.
-
-- **Modularidad para nuevos módulos**: agregar `pauses` o cualquier nuevo
-  análisis = nueva entrada en `_TOOL_BY_MODULE` + nueva sección en
-  `live_prompt.py`. El supervisor no cambia. El router no cambia. El frontend
-  agrega la categoría en la unión TypeScript y un strike counter más.
-
-- **Audio en PCM 16k mono**: la Live API espera `audio/pcm;rate=16000`. El
-  frontend convierte el output del micrófono a este formato (Web Audio API)
-  antes de mandarlo. No usamos webm/opus aquí porque el modelo Live evita el
-  decoder y opera sobre PCM crudo.
-
-## 11. Logging diagnóstico
-
-Todas las capas del pipeline emiten `logger.info` con un prefijo
-identificable para poder rastrear fallas sin habilitar debug:
+Mantiene los prefijos previos:
 
 | Prefijo | Origen |
 |---|---|
 | `[live-ws]` | Router WS: accept, auth, validación de modules/parent, ready, supervisor outcome, close |
-| `[supervisor]` | Orquestador: start, audio iterator drained, strike emitido o descartado y motivo |
-| `[live-gemini]` | Wrapper genai: open, close, errores, tool call recibido, contador de chunks enviados (1, 10, 100, 1000, ...) |
+| `[supervisor]` | Orquestador: start, audio iterator drained, strike emitido, contadores |
+| `[live-assemblyai]` | Wrapper SDK: open, close, transcripts finales, errors |
 
-Una sesión saludable produce algo así en orden:
+Sesión saludable:
 
 ```
 [live-ws] WS accepted for session_id=...
 [live-ws] auth ok user_id=...
-[live-ws] start ok modules=[...]
+[live-ws] start ok modules=['muletillas']
 [live-ws] sent ready, starting supervisor
-[supervisor] starting (modules=[...])
-[live-gemini] opening Live WS (model=..., modules=[...])
-[live-gemini] Live WS opened
-[live-gemini] chunks sent: 1
-[live-gemini] chunks sent: 10
-[live-gemini] tool call received: name=flag_muletilla id=... args_keys=[...]
-[supervisor] strike emitted category=muletillas word='este' severity=low
-...
-[supervisor] audio iterator drained, signaling end
-[supervisor] finished
-[live-gemini] closing Live WS
-[live-gemini] Live WS closed
+[supervisor] starting (modules=['muletillas'])
+[live-assemblyai] opening Streaming WS (model=u3-rt-pro, sample_rate=16000)
+[live-assemblyai] Streaming WS opened
+[supervisor] receive loop started
+[supervisor] forwarded 1 chunks / 9600 bytes from client
+[live-assemblyai] turn final: 'ahora vamos a probar el sistema'
+[live-assemblyai] turn final: 'eh este es un ejemplo'
+[supervisor] STRIKE category=muletillas word='eh' snippet='eh este es un ejemplo'
+[supervisor] STRIKE category=muletillas word='este' snippet='eh este es un ejemplo'
+[supervisor] audio iterator drained after 220 chunks / 704000 bytes
+[live-assemblyai] closing Streaming WS
+[live-assemblyai] Streaming WS closed
 [live-ws] closing (supervisor_failed=False)
 ```
 
-## 12. Pendientes
+## 9. Variable de entorno
 
-- Escalamiento: una WS por usuario simultáneo. Validar el límite de Cloud Run
-  antes de subir a producción real.
-- Tests del supervisor con un fake `LiveStreamGeminiSession` que emita tool
-  calls sintéticos.
+Nueva variable obligatoria:
+
+```env
+ASSEMBLYAI_API_KEY=...   # cargada por config.Settings.assemblyai_api_key
+```
+
+`backend/.env` está en `.gitignore`. El valor real nunca se commitea.
+
+## 10. Decisiones de diseño
+
+- **Solo finals, no partials**: confiabilidad sobre velocidad marginal. Un
+  partial puede mutar mientras la frase avanza; un strike disparado por
+  partial podría corregirse en la siguiente actualización y dejar al usuario
+  cortado por nada.
+- **Diccionario en backend, no STT-side**: AssemblyAI no filtra muletillas
+  por idioma (su parámetro `filler_words` es solo inglés). Hacemos el filtro
+  acá con un conjunto que es trivialmente editable cuando aparecen casos
+  reales.
+- **Severidad fija `"low"`**: el matcher no tiene base para distinguir
+  severidad sin contexto histórico. El campo queda en el wire format por
+  compatibilidad con el frontend y para permitir lógica futura (ej. subir a
+  `medium` si la misma muletilla se repite N veces).
+- **Pron/acc fuera del live**: aceptamos perder corten en vivo para esos
+  módulos a cambio de la confiabilidad del composed-eval al cierre.
+
+## 11. Pendientes
+
+- Tests del matcher con casos negativos (palabras del diccionario en contexto
+  no-filler).
+- Métrica de falsos positivos en sesiones reales para ajustar el diccionario.
+- Estimar costo real por sesión (AssemblyAI Universal-3 Pro Streaming = $0.45
+  / hora) y dimensionar el free tier ($50 → ~111 horas).
