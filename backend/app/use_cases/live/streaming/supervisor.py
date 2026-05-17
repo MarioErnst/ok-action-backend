@@ -1,29 +1,36 @@
-"""Per-session orchestrator that bridges the browser WS to Gemini Live.
+"""Per-session orchestrator that bridges the browser WS to AssemblyAI.
 
-One supervisor instance lives for the duration of one live session. It
-owns three concerns and nothing else:
+One supervisor instance lives for the duration of one live session.
+Responsibilities:
 
-1. Forward inbound audio chunks (from the client WS) into the Gemini
-   live session.
-2. Pull tool calls from the Gemini live session, filter them through
-   the anti-hallucination contract, and emit a strike event back to
-   the client WS for every valid call.
+1. Forward inbound PCM audio chunks (from the client WS) into the
+   AssemblyAI streaming session.
+2. Consume final transcripts from AssemblyAI, run them through the
+   Spanish muletilla matcher, and emit one StrikeEvent per filler
+   occurrence back to the client WS.
 3. Persist nothing. The composed-eval endpoint is still the single
    source of truth for child sessions in the database; the supervisor
-   only orchestrates real-time signals.
+   only orchestrates real-time signals for the live "corten".
 
-The strike threshold (1 strike = cut) lives on the frontend so the
-backend stays stateless on the rules: it emits one event per valid
-tool call, the client decides when to stop. That mirrors how the old
-frame pipeline worked and keeps the cut policy editable without a
-backend deploy.
+Why AssemblyAI replaced Gemini Live here: Gemini Live is a
+conversational model that, when forced to evaluate audio on a timer,
+hallucinated tool calls (it would "complete" expected speech patterns
+with imaginary muletillas). AssemblyAI is a transcriber — it returns
+what it actually heard, never invents. Combined with a Spanish filler
+dictionary, every emitted strike is grounded in a real transcript
+token.
+
+Module scope: today the supervisor only handles muletillas. The
+LiveStreamModule union is intentionally narrow. Pronunciation and
+accentuation evaluation continue to live in the composed-eval flow
+at session end (no live "corten" for those modules).
 
 Composition with the existing pipeline:
 - start_live_session creates the parent row in BD; the supervisor
-  attaches to it via session_id and never writes to BD.
-- The client opens the WS once start() succeeds; the supervisor
+  attaches via session_id and never writes to BD.
+- The client opens the WS after start() succeeds; the supervisor
   authenticates via the FastAPI dependency before instantiating.
-- On client disconnect, the supervisor closes the Gemini WS and
+- On client disconnect, the supervisor closes the AssemblyAI WS and
   returns. The router handler runs no extra cleanup.
 """
 
@@ -31,71 +38,44 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
-import struct
+import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Literal
 
-from app.infrastructure.ai.live_stream_gemini import (
-    LiveStreamGeminiSession,
-    LiveToolCall,
+from app.infrastructure.ai.live_stream_assemblyai import (
+    AssemblyAIStreamingSession,
 )
-from app.use_cases.live.streaming.tools import (
-    TOOL_NAME_TO_MODULE,
-    LiveStreamModule,
+from app.use_cases.live.streaming.muletillas_dictionary import (
+    MuletillaMatch,
+    extract_muletillas,
 )
 
 
 logger = logging.getLogger(__name__)
 
 
-# Snippets shorter than this are considered no-evidence and dropped.
-# Tuned so the model has to actually echo back at least a couple of
-# words; one-word "snippets" usually mean the model invented the call.
-_MIN_SNIPPET_CHARS = 4
+# The supervisor exposes the same `LiveStreamModule` shape as before
+# so the router payload stays stable, but the only category we emit
+# today is muletillas. Pronunciation and accentuation moved to the
+# composed-eval flow that runs at session end.
+LiveStreamModule = Literal["muletillas"]
 
 
-# Valid severities the supervisor surfaces. Anything else gets defaulted
-# to 'low' so a malformed args dict never bypasses the filter chain.
-_VALID_SEVERITIES = frozenset({"low", "medium", "high"})
-
-
-# Period between forced activity_end -> activity_start pulses. Each
-# pulse closes the current "turn" so the model evaluates what it has
-# heard and emits any pending tool calls. Smaller values reduce the
-# corten latency but increase token usage (one model "response" per
-# pulse). 2 seconds is a workable middle ground for a teaching tool
-# that needs sub-3-second corten without flooding the model with
-# end-of-turn signals.
-_ACTIVITY_PULSE_SECONDS = 2.0
-
-
-# RMS threshold over PCM16 samples to consider a chunk as "speech".
-# Pure silence sits around 0; ambient mic noise around 50-150; a
-# spoken syllable easily reaches 500-3000. 200 is loose enough to
-# accept soft speech and tight enough to reject room noise.
-_SPEECH_RMS_THRESHOLD = 200
-
-
-def _chunk_rms(chunk: bytes) -> float:
-    """RMS of a PCM16 mono little-endian byte chunk."""
-
-    sample_count = len(chunk) // 2
-    if sample_count == 0:
-        return 0.0
-    samples = struct.unpack(f"<{sample_count}h", chunk[: sample_count * 2])
-    sum_sq = sum(s * s for s in samples)
-    return math.sqrt(sum_sq / sample_count)
+VALID_LIVE_STREAM_MODULES: tuple[LiveStreamModule, ...] = ("muletillas",)
 
 
 @dataclass(frozen=True)
 class StrikeEvent:
-    """Strike event that the supervisor emits towards the client.
+    """Strike event the supervisor emits towards the client.
 
-    category is the user-facing module name (matches the LiveStreamModule
-    enum and the frontend's domain). word/snippet/severity travel with
-    the event so the UI can render an immediate, specific hint instead
-    of a generic "corten".
+    `category` matches the LiveStreamModule literal and the frontend's
+    StreamingStrikeCategory. `word` is the canonical muletilla form
+    (e.g. "eh", "o sea"). `transcript_snippet` carries enough context
+    for the UI to render the surrounding sentence fragment. `severity`
+    is always "low" for now — the dictionary matcher does not weigh
+    occurrences. We keep the field in the payload because the wire
+    contract is shared with the frontend, which may color the chip
+    differently per severity.
     """
 
     category: LiveStreamModule
@@ -111,6 +91,13 @@ class StrikeEvent:
 StrikeSink = Callable[[StrikeEvent], Awaitable[None]]
 
 
+# Severity default for every dictionary match. AssemblyAI returns a
+# literal transcript so we have no per-occurrence severity signal; the
+# frontend can derive its own severity later (e.g. raise it after the
+# same muletilla repeats N times) if pedagogy requires it.
+_DEFAULT_SEVERITY = "low"
+
+
 class LiveStreamSupervisor:
     """Orchestrates one live streaming session."""
 
@@ -121,45 +108,32 @@ class LiveStreamSupervisor:
     ):
         if not modules:
             raise ValueError("supervisor requires at least one module")
+        invalid = [m for m in modules if m not in VALID_LIVE_STREAM_MODULES]
+        if invalid:
+            raise ValueError(
+                f"supervisor received unsupported modules: {invalid}"
+            )
         self._modules = modules
         self._strike_sink = strike_sink
-        self._gemini: LiveStreamGeminiSession | None = None
         self._receive_task: asyncio.Task | None = None
-        # Flag flipped on by the audio iterator each time a loud-enough
-        # chunk arrives, flipped off by the pulser each time it pulses.
-        # The pulser uses it to skip activity_end when the user has
-        # been silent for the whole interval, which is what prevents
-        # the model from hallucinating tool calls during silence.
-        self._speech_seen_since_last_pulse = False
 
     async def run(self, audio_iter) -> None:
-        """Drive the session until either audio_iter ends or Gemini dies.
+        """Drive the session until audio_iter ends or AssemblyAI dies.
 
-        audio_iter is an async iterator of raw PCM byte chunks coming
+        `audio_iter` is an async iterator of raw PCM byte chunks coming
         from the browser. We spawn a parallel task that listens to
-        Gemini and then sequentially forward audio until the client
-        stops sending. Returning from this method tears down both ends.
+        AssemblyAI's final transcripts and forwards strikes, then
+        sequentially pump audio until the client stops sending.
+        Returning from this method tears down both ends.
 
-        Errors propagate. The router wraps run() in a try/except so the
-        client WS gets a clean close frame on failure.
+        Errors propagate. The router wraps run() in a try/except so
+        the client WS gets a clean close frame on failure.
         """
 
-        logger.info(
-            "[supervisor] starting (modules=%s)", self._modules,
-        )
-        gemini = LiveStreamGeminiSession(modules=self._modules)
-        async with gemini.open() as g:
-            self._gemini = g
-            # Manual activity control: open the first turn explicitly,
-            # spawn the receive loop, and start the pulser that forces
-            # end-of-turn every few seconds so the model emits pending
-            # tool calls without waiting for the student to pause.
-            await g.send_activity_start()
-            self._receive_task = asyncio.create_task(self._receive_loop(g))
-            pulser_stop = asyncio.Event()
-            pulser_task = asyncio.create_task(
-                self._activity_pulser(g, pulser_stop)
-            )
+        logger.info("[supervisor] starting (modules=%s)", self._modules)
+        session = AssemblyAIStreamingSession()
+        async with session.open() as s:
+            self._receive_task = asyncio.create_task(self._receive_loop(s))
             chunks_received = 0
             bytes_received = 0
             try:
@@ -168,32 +142,19 @@ class LiveStreamSupervisor:
                         continue
                     chunks_received += 1
                     bytes_received += len(chunk)
-                    if _chunk_rms(chunk) > _SPEECH_RMS_THRESHOLD:
-                        self._speech_seen_since_last_pulse = True
                     if chunks_received in (1, 10, 100, 1000) or chunks_received % 500 == 0:
                         logger.info(
                             "[supervisor] forwarded %d chunks / %d bytes from client",
                             chunks_received,
                             bytes_received,
                         )
-                    await g.send_audio_chunk(chunk)
+                    await s.send_audio_chunk(chunk)
                 logger.info(
-                    "[supervisor] audio iterator drained after %d chunks / %d bytes, signaling end",
+                    "[supervisor] audio iterator drained after %d chunks / %d bytes",
                     chunks_received,
                     bytes_received,
                 )
-                # Tell the model the user stopped pushing audio so it
-                # flushes any pending evaluation before we tear down.
-                await g.send_activity_end()
-                await g.signal_audio_end()
             finally:
-                pulser_stop.set()
-                if not pulser_task.done():
-                    pulser_task.cancel()
-                    try:
-                        await pulser_task
-                    except asyncio.CancelledError:
-                        pass
                 if self._receive_task and not self._receive_task.done():
                     self._receive_task.cancel()
                     try:
@@ -201,146 +162,44 @@ class LiveStreamSupervisor:
                     except asyncio.CancelledError:
                         pass
                 self._receive_task = None
-                self._gemini = None
                 logger.info("[supervisor] finished")
 
-    async def _activity_pulser(
-        self,
-        gemini: LiveStreamGeminiSession,
-        stop_event: asyncio.Event,
+    async def _receive_loop(
+        self, session: AssemblyAIStreamingSession
     ) -> None:
-        """Pulse activity_end -> activity_start when the user spoke.
-
-        Skips the pulse entirely when no speech was heard since the
-        previous pulse. Pulsing during pure silence forces the model
-        to "respond" anyway and it hallucinates tool calls (we saw it
-        invent muletillas and accentuation errors out of thin air).
-        Only firing the pulse when there is real audio to evaluate
-        keeps the model honest.
-        """
-
-        pulse_count = 0
-        skip_count = 0
-        try:
-            while not stop_event.is_set():
-                try:
-                    await asyncio.wait_for(
-                        stop_event.wait(), timeout=_ACTIVITY_PULSE_SECONDS
-                    )
-                    return
-                except asyncio.TimeoutError:
-                    pass
-                if not self._speech_seen_since_last_pulse:
-                    skip_count += 1
-                    logger.info(
-                        "[supervisor] skipping pulse #%d (silence)",
-                        pulse_count + skip_count,
-                    )
-                    continue
-                pulse_count += 1
-                self._speech_seen_since_last_pulse = False
-                logger.info("[supervisor] activity pulse #%d", pulse_count)
-                try:
-                    await gemini.send_activity_end()
-                    await gemini.send_activity_start()
-                except Exception as exc:
-                    logger.warning(
-                        "[supervisor] activity pulse failed: %s", exc
-                    )
-                    return
-        finally:
-            logger.info(
-                "[supervisor] activity pulser stopped after %d pulses (skipped %d during silence)",
-                pulse_count,
-                skip_count,
-            )
-
-    async def _receive_loop(self, gemini: LiveStreamGeminiSession) -> None:
-        """Pull tool calls from Gemini and forward valid strikes."""
+        """Consume final transcripts from AssemblyAI."""
 
         logger.info("[supervisor] receive loop started")
         try:
-            await self._consume_tool_calls(gemini)
+            async for transcript in session.iter_final_transcripts():
+                await self._process_transcript(transcript)
         finally:
             logger.info("[supervisor] receive loop ended")
 
-    async def _consume_tool_calls(self, gemini: LiveStreamGeminiSession) -> None:
-        async for call in gemini.iter_tool_calls():
-            try:
-                event = self._normalize_call(call)
-            except Exception as exc:
-                logger.warning(
-                    "[supervisor] dropping malformed tool call (%s): %s",
-                    call.name,
-                    exc,
-                )
-                # Still ack so the model does not retry.
-                await gemini.ack_tool_call(call)
-                continue
+    async def _process_transcript(self, transcript: str) -> None:
+        """Run the matcher and emit a strike per detected muletilla."""
 
-            if event is None:
-                # Anti-hallucination filter rejected the call. Ack but
-                # do not emit a strike.
-                await gemini.ack_tool_call(call)
-                continue
-
+        matches = extract_muletillas(transcript)
+        if not matches:
+            return
+        for match in matches:
+            event = self._build_event(match)
             logger.info(
-                "[supervisor] STRIKE category=%s word=%r severity=%s snippet=%r received_at_ms=%d",
+                "[supervisor] STRIKE category=%s word=%r snippet=%r",
                 event.category,
                 event.word,
-                event.severity,
                 event.transcript_snippet,
-                event.received_at_ms,
             )
             try:
                 await self._strike_sink(event)
             except Exception as exc:
                 logger.warning("[supervisor] strike sink raised: %s", exc)
-            finally:
-                await gemini.ack_tool_call(call)
 
-    def _normalize_call(self, call: LiveToolCall) -> StrikeEvent | None:
-        """Translate a raw tool call into a StrikeEvent or drop it.
-
-        Drops the call when:
-        - the tool name is not one of the three known names
-        - transcript_snippet is missing, empty, or below the minimum
-          length threshold
-        - word is missing or empty
-        """
-
-        category = TOOL_NAME_TO_MODULE.get(call.name)
-        if category is None:
-            logger.warning("[supervisor] unknown tool name from Gemini: %s", call.name)
-            return None
-
-        args = call.args
-        word = (args.get("word") or "").strip()
-        snippet = (args.get("transcript_snippet") or "").strip()
-        severity = (args.get("severity") or "").strip().lower()
-
-        if not word:
-            logger.info(
-                "[supervisor] dropping %s tool call: word empty (args=%s)",
-                call.name,
-                list(args.keys()),
-            )
-            return None
-        if len(snippet) < _MIN_SNIPPET_CHARS:
-            logger.info(
-                "[supervisor] dropping %s tool call: snippet too short (%r)",
-                call.name,
-                snippet,
-            )
-            return None
-
-        if severity not in _VALID_SEVERITIES:
-            severity = "low"
-
+    def _build_event(self, match: MuletillaMatch) -> StrikeEvent:
         return StrikeEvent(
-            category=category,
-            word=word,
-            transcript_snippet=snippet,
-            severity=severity,
-            received_at_ms=call.received_at_ms,
+            category="muletillas",
+            word=match.word,
+            transcript_snippet=match.context_snippet,
+            severity=_DEFAULT_SEVERITY,
+            received_at_ms=int(time.time() * 1000),
         )

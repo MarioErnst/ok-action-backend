@@ -43,12 +43,10 @@ from app.use_cases.live.sessions import (
     validate_parent_live_session,
 )
 from app.use_cases.live.streaming.supervisor import (
+    LiveStreamModule,
     LiveStreamSupervisor,
     StrikeEvent,
-)
-from app.use_cases.live.streaming.tools import (
     VALID_LIVE_STREAM_MODULES,
-    LiveStreamModule,
 )
 
 
