@@ -58,6 +58,18 @@ _MODEL = "u3-rt-pro"
 _SAMPLE_RATE = 16_000
 
 
+# Maximum silence (ms) before AssemblyAI is forced to close a turn even
+# when the smart detector has not reached its confidence threshold. The
+# server default is ~2400 ms, which is fine for transcription but bad
+# for our use case: a fluent speaker who never pauses for two seconds
+# keeps the strike pipeline waiting until the session ends, so
+# muletillas dropped mid-discourse never trigger the live corten. With
+# 800 ms the corten fires roughly one second after any natural breath
+# in the speech — still well below conversational fluidity but tight
+# enough to react to the first filler.
+_MAX_TURN_SILENCE_MS = 800
+
+
 # Prompt steers the model into verbatim Spanish (Latin American). The
 # muletilla list is repeated here so the model preserves them in the
 # transcript instead of cleaning them up — see Universal-3 Pro
@@ -126,11 +138,13 @@ class AssemblyAIStreamingSession:
             speech_model=_MODEL,
             prompt=_LIVE_PROMPT,
             keyterms_prompt=_KEYTERMS,
+            max_turn_silence=_MAX_TURN_SILENCE_MS,
         )
         logger.info(
-            "[live-assemblyai] opening Streaming WS (model=%s, sample_rate=%d)",
+            "[live-assemblyai] opening Streaming WS (model=%s, sample_rate=%d, max_turn_silence=%dms)",
             _MODEL,
             _SAMPLE_RATE,
+            _MAX_TURN_SILENCE_MS,
         )
         # connect() is a blocking handshake; offload to a worker thread
         # so the event loop keeps serving other tasks.

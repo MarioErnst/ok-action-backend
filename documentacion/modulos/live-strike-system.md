@@ -122,6 +122,13 @@ Configuración de la sesión (`StreamingParameters`):
 - `prompt=...` corto, en inglés, pidiendo verbatim español-latam + lista de
   muletillas a preservar.
 - `keyterms_prompt=[...]` con las muletillas como boost de keyterms.
+- `max_turn_silence=800` (ms). Forza el cierre del turn cuando hay 800 ms de
+  silencio aunque el detector inteligente de fin de turno no llegue a su
+  umbral de confianza. El default de servidor (~2400 ms) era demasiado largo
+  para nuestro caso: un usuario que habla fluidamente sin pausas largas no
+  generaba turns intermedios y la primera muletilla recién aparecía en el
+  único turn final emitido al cerrar la sesión, demasiado tarde para
+  disparar el corten en vivo.
 
 El wrapper solo expone `iter_final_transcripts()` para el supervisor; los
 partials se ignoran porque AssemblyAI corrige el partial conforme gana
