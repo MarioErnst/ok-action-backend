@@ -133,6 +133,15 @@ Config de la sesión:
   pide silencio así que el audio emitido tiende a ser un saludo corto a
   lo sumo.
 - `system_instruction = build_live_streaming_prompt(modules)`.
+- `realtime_input_config.automatic_activity_detection` con
+  `end_of_speech_sensitivity=HIGH`, `silence_duration_ms=300`,
+  `prefix_padding_ms=0`. El default de Gemini Live espera ~1 s de
+  silencio para marcar fin de turno y procesar herramientas. Con un
+  alumno que habla 20 s seguidos sin pausa larga, los tool calls
+  quedan buffer-eados hasta el cierre del WS y el "corten" llega
+  irremediablemente tarde. Forzando el VAD agresivo, cualquier pausa
+  natural entre frases (200-500 ms en español espontáneo) ya cuenta
+  como end-of-turn y dispara la emisión de strikes en near-real-time.
 - `tools = [Tool(function_declarations=[FunctionDeclaration(**decl) for decl in build_tools_for_modules(modules)])]`.
 - `temperature = 0.3` para limitar falsos positivos.
 
