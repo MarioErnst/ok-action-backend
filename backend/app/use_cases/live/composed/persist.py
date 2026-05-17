@@ -28,11 +28,9 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.accentuation_metrics import AccentuationMetrics
 from app.domain.entities.enums import ModuleEnum, SessionStatusEnum, TopEmotionEnum
 from app.domain.entities.facial_expression_metrics import FacialExpressionMetrics
 from app.domain.entities.muletillas_metrics import MuletillasMetrics
-from app.domain.entities.pronunciation_metrics import PronunciationMetrics
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.use_cases.live.composed.prompts import ComposableModule
@@ -64,32 +62,6 @@ def _muletillas_score(section: dict) -> int:
     """Mirror standalone muletillas: session score equals fluency_score."""
 
     return _clamp_pct(section.get("fluency_score"))
-
-
-def _accentuation_score(section: dict) -> int:
-    """Mirror standalone accentuation: session score is the rounded average
-    of the four sub-scores."""
-
-    sub = [
-        _clamp_pct(section.get("pronunciation_score")),
-        _clamp_pct(section.get("rhythm_score")),
-        _clamp_pct(section.get("intonation_score")),
-        _clamp_pct(section.get("stress_score")),
-    ]
-    return round(sum(sub) / len(sub))
-
-
-def _pronunciation_score(section: dict) -> int:
-    """Mirror standalone pronunciation: session score is the rounded
-    average of the four sub-scores."""
-
-    sub = [
-        _clamp_pct(section.get("vowel_score")),
-        _clamp_pct(section.get("consonant_score")),
-        _clamp_pct(section.get("fluency_score")),
-        _clamp_pct(section.get("intelligibility_score")),
-    ]
-    return round(sum(sub) / len(sub))
 
 
 def _normalize_facial_pcts(summary: dict) -> dict[str, int]:
@@ -186,67 +158,6 @@ async def persist_composed_evaluation(
                 session_id=session_row.id,
                 fluency_score=_clamp_pct(section.get("fluency_score")),
                 muletillas_count=_safe_int(section.get("total_muletillas")),
-            )
-            db.add(metrics_row)
-            created.append((session_row, metrics_row))
-
-        elif module == "accentuation":
-            if not audio_intelligible:
-                continue
-            section = gemini_response.get("accentuation")
-            if not isinstance(section, dict):
-                continue
-            score = _accentuation_score(section)
-            session_row = Session(
-                user_id=user.id,
-                module=ModuleEnum.accentuation,
-                parent_id=parent_live_id,
-                started_at=started_at,
-                ended_at=ended_at,
-                duration_ms=duration_ms,
-                score=score,
-                status=SessionStatusEnum.completed,
-            )
-            db.add(session_row)
-            await db.flush()
-            metrics_row = AccentuationMetrics(
-                session_id=session_row.id,
-                pronunciation_score=_clamp_pct(section.get("pronunciation_score")),
-                rhythm_score=_clamp_pct(section.get("rhythm_score")),
-                intonation_score=_clamp_pct(section.get("intonation_score")),
-                stress_score=_clamp_pct(section.get("stress_score")),
-                phrases_count=0,
-            )
-            db.add(metrics_row)
-            created.append((session_row, metrics_row))
-
-        elif module == "pronunciation":
-            if not audio_intelligible:
-                continue
-            section = gemini_response.get("pronunciation")
-            if not isinstance(section, dict):
-                continue
-            score = _pronunciation_score(section)
-            session_row = Session(
-                user_id=user.id,
-                module=ModuleEnum.pronunciation,
-                parent_id=parent_live_id,
-                started_at=started_at,
-                ended_at=ended_at,
-                duration_ms=duration_ms,
-                score=score,
-                status=SessionStatusEnum.completed,
-            )
-            db.add(session_row)
-            await db.flush()
-            metrics_row = PronunciationMetrics(
-                session_id=session_row.id,
-                level="free",
-                vowel_score=_clamp_pct(section.get("vowel_score")),
-                consonant_score=_clamp_pct(section.get("consonant_score")),
-                fluency_score=_clamp_pct(section.get("fluency_score")),
-                intelligibility_score=_clamp_pct(section.get("intelligibility_score")),
-                phrases_count=0,
             )
             db.add(metrics_row)
             created.append((session_row, metrics_row))
