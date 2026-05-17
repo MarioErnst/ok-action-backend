@@ -14,7 +14,7 @@ Downgrade is intentionally a no-op: removing enum values from a
 Postgres enum is not directly supported and would require rebuilding
 the type, which is risky if rows reference the value.
 
-Revision ID: 0009_add_live_audio_auto_stop_reasons
+Revision ID: 0009_live_audio_auto_stops
 Revises: 0008_loudness_noise_floor
 Create Date: 2026-05-17
 """
@@ -24,7 +24,7 @@ from __future__ import annotations
 from alembic import op
 
 
-revision = "0009_add_live_audio_auto_stop_reasons"
+revision = "0009_live_audio_auto_stops"
 down_revision = "0008_loudness_noise_floor"
 branch_labels = None
 depends_on = None
