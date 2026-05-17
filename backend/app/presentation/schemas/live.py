@@ -27,7 +27,12 @@ class FinalizeSessionRequest(BaseModel):
     completed. Omit the body (or pass auto_stop_reason=None) for the
     standard natural-completion case."""
 
-    auto_stop_reason: Literal["auto_stop_strikes", "auto_stop_emotion"] | None = None
+    auto_stop_reason: Literal[
+        "auto_stop_strikes",
+        "auto_stop_emotion",
+        "auto_stop_loudness",
+        "auto_stop_phonation",
+    ] | None = None
 
 
 class FacialSummaryInput(BaseModel):
@@ -115,6 +120,8 @@ class FinalizeSessionResponse(BaseModel):
         "completed",
         "auto_stop_strikes",
         "auto_stop_emotion",
+        "auto_stop_loudness",
+        "auto_stop_phonation",
     ]
 
 
@@ -142,6 +149,8 @@ class LiveMetricsOutput(BaseModel):
         "completed",
         "auto_stop_strikes",
         "auto_stop_emotion",
+        "auto_stop_loudness",
+        "auto_stop_phonation",
     ]
 
 
@@ -173,6 +182,8 @@ class LiveSessionListItem(BaseModel):
         "completed",
         "auto_stop_strikes",
         "auto_stop_emotion",
+        "auto_stop_loudness",
+        "auto_stop_phonation",
     ] | None
 
 
