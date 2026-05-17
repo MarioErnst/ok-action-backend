@@ -143,28 +143,86 @@ limpio aunque haya excepciones.
 
 `LiveStreamSupervisor(modules=["muletillas"], strike_sink).run(audio_iter)`.
 
-Estructura simplificada respecto a la versión con Gemini Live:
+Estructura:
 - Tarea principal: consume `audio_iter` y reenvía cada chunk PCM al wrapper.
 - Tarea de fondo: itera `iter_final_transcripts()`, corre el matcher y emite
-  `StrikeEvent` por cada match.
-- No hay pulser, no hay VAD propio, no hay filtros de severidad ni de snippet.
-  AssemblyAI ya hace el trabajo de detectar speech y formatear turns.
+  `StrikeEvent` por cada match confirmado.
+- No hay pulser, no hay VAD propio, no hay filtros de severidad ni de snippet
+  más allá del matcher. AssemblyAI ya hace el trabajo de detectar speech y
+  formatear turns.
 
 `StrikeEvent` queda como dataclass con `category`, `word`, `transcript_snippet`,
 `severity` (siempre `"low"` por ahora) y `received_at_ms`. El sink del router
 serializa este event como JSON al cliente sin cambios.
 
+### 7.1 Flujo híbrido del matcher (`feature/live_phonation_loudness`)
+
+El diccionario `muletillas_dictionary.py` divide los unigrams en dos grupos:
+
+- **Inequívocos** (`SPANISH_FILLER_UNAMBIGUOUS_UNIGRAMS`): `eh, ehh, ehhh, mmm,
+  mm, mmmm, ah, ahh, ahhh, viste, digamos`. Más los bigrams `o sea` / `o sé`.
+  Son interjecciones puras: cualquier ocurrencia es muletilla.
+- **Ambiguos** (`SPANISH_FILLER_AMBIGUOUS_UNIGRAMS`): `tipo, este, esta, esto,
+  pues`. Tienen significado real en español ("ningún tipo de", "este auto",
+  "pues bien"). El dataclass `MuletillaMatch` los marca con `is_ambiguous=True`.
+
+El supervisor procesa cada transcript así:
+
+1. Matcher local extrae todos los matches con su flag de ambigüedad (<5 ms).
+2. Si hay matches ambiguos, dispara una llamada Gemini Flash-Lite
+   (`muletillas_context_classifier_gemini.py`, text-only, `temperature=0`) en
+   background.
+3. Los inequívocos se emiten inmediatamente al sink (latencia ~0 ms desde el
+   matcher) sin esperar al LLM. Como el umbral de corten del frontend es 1
+   strike, el primer `eh` corta sin pagar el costo del LLM.
+4. Cuando el classifier responde, los ambiguos confirmados se emiten; los
+   rechazados se descartan (con log explícito por palabra).
+5. **Fallback de seguridad**: si la llamada al classifier falla
+   (`MuletillaContextClassifierError` por red, timeout o respuesta inválida),
+   se descartan TODOS los ambiguos del turn — precision-first. Es preferible
+   perder una detección real de `tipo` que cortar al usuario por
+   "ningún tipo de".
+
+**Modelo y costo**:
+- `gemini-2.5-flash-lite` (pineado, sin alias `latest`).
+- Solo texto, no audio: el transcript ya tiene toda la información que el
+  modelo necesita y mandar el audio doblaría el tamaño del request sin ganar
+  precisión.
+- Latencia warm observada en pruebas locales: ~900-1300 ms por llamada.
+  Esto solo se suma al strike si hay ambiguos en ese turn y solo si los
+  ambiguos llegan antes que los inequívocos del mismo turn (caso raro: los
+  inequívocos disparan corten primero por el umbral del frontend).
+- Costo: orden de $0.0001 USD por turn con candidatos ambiguos.
+
 ## 8. Logging diagnóstico
 
-Mantiene los prefijos previos:
+Prefijos:
 
 | Prefijo | Origen |
 |---|---|
 | `[live-ws]` | Router WS: accept, auth, validación de modules/parent, ready, supervisor outcome, close |
-| `[supervisor]` | Orquestador: start, audio iterator drained, strike emitido, contadores |
-| `[live-assemblyai]` | Wrapper SDK: open, close, transcripts finales, errors |
+| `[supervisor]` | Orquestador: start, audio iterator drained, strike emitido, contadores, timings |
+| `[live-assemblyai]` | Wrapper SDK: open (incluye `max_turn_silence`), close, transcripts finales, errors |
 
-Sesión saludable:
+Cada transcript procesado emite una línea con el desglose de tiempos para
+poder dimensionar la latencia real del corten:
+
+```
+[supervisor] transcript processed (matches=3 unambiguous=2 ambiguous=1
+  confirmed=1 matcher_ms=0 unambiguous_emit_ms=0 classifier_ms=1254
+  total_ms=1254)
+```
+
+- `matcher_ms`: tiempo del matcher local (siempre ~0 ms).
+- `unambiguous_emit_ms`: tiempo desde el matcher hasta que terminaron de
+  emitirse los inequívocos. Es la latencia que ve el frontend para los
+  inequívocos.
+- `classifier_ms`: tiempo total de la llamada a Gemini Flash-Lite, o
+  `skipped` si no hubo ambiguos.
+- `total_ms`: tiempo desde que llegó el transcript hasta que terminó el
+  procesamiento. Para sesiones sin ambiguos es ~`matcher_ms`.
+
+Sesión saludable (con un ambiguo descartado por el classifier):
 
 ```
 [live-ws] WS accepted for session_id=...
@@ -172,15 +230,14 @@ Sesión saludable:
 [live-ws] start ok modules=['muletillas']
 [live-ws] sent ready, starting supervisor
 [supervisor] starting (modules=['muletillas'])
-[live-assemblyai] opening Streaming WS (model=u3-rt-pro, sample_rate=16000)
+[live-assemblyai] opening Streaming WS (model=u3-rt-pro, sample_rate=16000, max_turn_silence=800ms)
 [live-assemblyai] Streaming WS opened
 [supervisor] receive loop started
-[supervisor] forwarded 1 chunks / 9600 bytes from client
-[live-assemblyai] turn final: 'ahora vamos a probar el sistema'
-[live-assemblyai] turn final: 'eh este es un ejemplo'
-[supervisor] STRIKE category=muletillas word='eh' snippet='eh este es un ejemplo'
-[supervisor] STRIKE category=muletillas word='este' snippet='eh este es un ejemplo'
-[supervisor] audio iterator drained after 220 chunks / 704000 bytes
+[live-assemblyai] turn final: 'No voy a decir ningún tipo de muletillas, mmm'
+[supervisor] STRIKE category=muletillas word='mmm' snippet='...mmm...' ambiguous=False
+[supervisor] dropped ambiguous match word='tipo' snippet='ningún tipo de muletillas'
+[supervisor] transcript processed (matches=2 unambiguous=1 ambiguous=1 confirmed=0 matcher_ms=0 unambiguous_emit_ms=0 classifier_ms=1042 total_ms=1042)
+[supervisor] finished (chunks_in=220 transcripts=1 strikes=1 sink_errors=0 ambiguous_dropped=1 classifier_errors=0)
 [live-assemblyai] closing Streaming WS
 [live-assemblyai] Streaming WS closed
 [live-ws] closing (supervisor_failed=False)
@@ -206,6 +263,14 @@ ASSEMBLYAI_API_KEY=...   # cargada por config.Settings.assemblyai_api_key
   por idioma (su parámetro `filler_words` es solo inglés). Hacemos el filtro
   acá con un conjunto que es trivialmente editable cuando aparecen casos
   reales.
+- **Híbrido matcher + LLM solo para ambiguos**: los inequívocos no pagan
+  costo ni latencia; los ambiguos pasan por Gemini Flash-Lite en background.
+  La alternativa de un único LLM call por turn agrega ~1 s a todos los
+  strikes; descartar palabras ambiguas del diccionario pierde detecciones
+  útiles.
+- **Fallback precision-first**: si el classifier falla, descartamos los
+  ambiguos. Aceptamos perder algunas detecciones reales antes que cortar al
+  usuario por una palabra normal.
 - **Severidad fija `"low"`**: el matcher no tiene base para distinguir
   severidad sin contexto histórico. El campo queda en el wire format por
   compatibilidad con el frontend y para permitir lógica futura (ej. subir a
@@ -217,6 +282,11 @@ ASSEMBLYAI_API_KEY=...   # cargada por config.Settings.assemblyai_api_key
 
 - Tests del matcher con casos negativos (palabras del diccionario en contexto
   no-filler).
-- Métrica de falsos positivos en sesiones reales para ajustar el diccionario.
+- Tests del classifier con prompts adversariales y telemetría de
+  acuerdo/desacuerdo con casos etiquetados a mano.
+- Métrica de falsos positivos y latencia real en sesiones reales
+  (`total_ms`, `classifier_ms`) para decidir si vale subir a Flash full o
+  bajar a un modelo más rápido (Haiku 4.5).
 - Estimar costo real por sesión (AssemblyAI Universal-3 Pro Streaming = $0.45
-  / hora) y dimensionar el free tier ($50 → ~111 horas).
+  / hora) y dimensionar el free tier ($50 → ~111 horas). El costo del
+  classifier por turn con ambiguos es despreciable contra el de AssemblyAI.
