@@ -116,6 +116,13 @@ class LiveStreamSupervisor:
         self._modules = modules
         self._strike_sink = strike_sink
         self._receive_task: asyncio.Task | None = None
+        # Session totals surfaced in the closing log so a single line at
+        # the end of each session reports everything we care about for
+        # diagnostics (chunks streamed, transcripts received, strikes
+        # emitted, strikes dropped by the sink).
+        self._transcripts_received = 0
+        self._strikes_emitted = 0
+        self._sink_errors = 0
 
     async def run(self, audio_iter) -> None:
         """Drive the session until audio_iter ends or AssemblyAI dies.
@@ -162,7 +169,13 @@ class LiveStreamSupervisor:
                     except asyncio.CancelledError:
                         pass
                 self._receive_task = None
-                logger.info("[supervisor] finished")
+                logger.info(
+                    "[supervisor] finished (chunks_in=%d transcripts=%d strikes=%d sink_errors=%d)",
+                    chunks_received,
+                    self._transcripts_received,
+                    self._strikes_emitted,
+                    self._sink_errors,
+                )
 
     async def _receive_loop(
         self, session: AssemblyAIStreamingSession
@@ -179,11 +192,13 @@ class LiveStreamSupervisor:
     async def _process_transcript(self, transcript: str) -> None:
         """Run the matcher and emit a strike per detected muletilla."""
 
+        self._transcripts_received += 1
         matches = extract_muletillas(transcript)
         if not matches:
             return
         for match in matches:
             event = self._build_event(match)
+            self._strikes_emitted += 1
             logger.info(
                 "[supervisor] STRIKE category=%s word=%r snippet=%r",
                 event.category,
@@ -193,6 +208,7 @@ class LiveStreamSupervisor:
             try:
                 await self._strike_sink(event)
             except Exception as exc:
+                self._sink_errors += 1
                 logger.warning("[supervisor] strike sink raised: %s", exc)
 
     def _build_event(self, match: MuletillaMatch) -> StrikeEvent:

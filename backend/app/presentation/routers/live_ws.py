@@ -151,10 +151,12 @@ async def live_session_stream_ws(
     async def read_client() -> None:
         """Pump client WS frames into audio_queue or terminate on end."""
 
+        end_reason = "unknown"
         try:
             while not stop_event.is_set():
                 message = await ws.receive()
                 if message["type"] == "websocket.disconnect":
+                    end_reason = "client_disconnect"
                     break
                 if message.get("bytes"):
                     try:
@@ -176,12 +178,15 @@ async def live_session_stream_ws(
                     except json.JSONDecodeError:
                         continue
                     if isinstance(data, dict) and data.get("type") == "end":
+                        end_reason = "client_end"
                         break
         except WebSocketDisconnect:
-            pass
+            end_reason = "client_disconnect"
         except Exception as exc:
-            logger.warning("Live WS client read error: %s", exc)
+            end_reason = "read_error"
+            logger.warning("[live-ws] client read error: %s", exc)
         finally:
+            logger.info("[live-ws] reader task done (reason=%s)", end_reason)
             stop_event.set()
             # Sentinel so audio_iter() exits gracefully.
             try:
