@@ -108,6 +108,9 @@ class LiveStreamSupervisor:
         client WS gets a clean close frame on failure.
         """
 
+        logger.info(
+            "[supervisor] starting (modules=%s)", self._modules,
+        )
         gemini = LiveStreamGeminiSession(modules=self._modules)
         async with gemini.open() as g:
             self._gemini = g
@@ -117,6 +120,7 @@ class LiveStreamSupervisor:
                     if not chunk:
                         continue
                     await g.send_audio_chunk(chunk)
+                logger.info("[supervisor] audio iterator drained, signaling end")
                 # Tell the model the user stopped pushing audio so it
                 # flushes any pending evaluation before we tear down.
                 await g.signal_audio_end()
@@ -129,6 +133,7 @@ class LiveStreamSupervisor:
                         pass
                 self._receive_task = None
                 self._gemini = None
+                logger.info("[supervisor] finished")
 
     async def _receive_loop(self, gemini: LiveStreamGeminiSession) -> None:
         """Pull tool calls from Gemini and forward valid strikes."""
@@ -137,7 +142,11 @@ class LiveStreamSupervisor:
             try:
                 event = self._normalize_call(call)
             except Exception as exc:
-                logger.warning("Dropping malformed tool call (%s): %s", call.name, exc)
+                logger.warning(
+                    "[supervisor] dropping malformed tool call (%s): %s",
+                    call.name,
+                    exc,
+                )
                 # Still ack so the model does not retry.
                 await gemini.ack_tool_call(call)
                 continue
@@ -148,10 +157,16 @@ class LiveStreamSupervisor:
                 await gemini.ack_tool_call(call)
                 continue
 
+            logger.info(
+                "[supervisor] strike emitted category=%s word=%r severity=%s",
+                event.category,
+                event.word,
+                event.severity,
+            )
             try:
                 await self._strike_sink(event)
             except Exception as exc:
-                logger.warning("Strike sink raised: %s", exc)
+                logger.warning("[supervisor] strike sink raised: %s", exc)
             finally:
                 await gemini.ack_tool_call(call)
 
@@ -167,7 +182,7 @@ class LiveStreamSupervisor:
 
         category = TOOL_NAME_TO_MODULE.get(call.name)
         if category is None:
-            logger.warning("Unknown tool name from Gemini: %s", call.name)
+            logger.warning("[supervisor] unknown tool name from Gemini: %s", call.name)
             return None
 
         args = call.args
@@ -176,10 +191,17 @@ class LiveStreamSupervisor:
         severity = (args.get("severity") or "").strip().lower()
 
         if not word:
+            logger.info(
+                "[supervisor] dropping %s tool call: word empty (args=%s)",
+                call.name,
+                list(args.keys()),
+            )
             return None
         if len(snippet) < _MIN_SNIPPET_CHARS:
             logger.info(
-                "Dropping %s tool call: snippet too short (%r)", call.name, snippet
+                "[supervisor] dropping %s tool call: snippet too short (%r)",
+                call.name,
+                snippet,
             )
             return None
 

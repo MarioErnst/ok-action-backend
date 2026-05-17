@@ -72,42 +72,51 @@ async def live_session_stream_ws(
     token: str = Query(...),
 ):
     await ws.accept()
+    logger.info("[live-ws] WS accepted for session_id=%s", session_id)
 
     async with async_session_factory() as auth_db:
         try:
             user = await authenticate_ws(token, auth_db)
         except Exception as exc:
-            logger.error("Live WS auth error: %s", exc)
+            logger.error("[live-ws] auth error: %s", exc)
             await ws.close(code=4001, reason="Unauthorized")
             return
 
     if not user:
+        logger.warning("[live-ws] unauthorized (session_id=%s)", session_id)
         await ws.close(code=4001, reason="Unauthorized")
         return
+    logger.info("[live-ws] auth ok user_id=%s", user.id)
 
     try:
         start_msg = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
     except (asyncio.TimeoutError, Exception) as exc:
-        logger.warning("Live WS start message error: %s", exc)
+        logger.warning("[live-ws] start message error: %s", exc)
         await ws.close(code=4002, reason="Expected start message")
         return
 
     requested_modules = start_msg.get("modules") if isinstance(start_msg, dict) else None
     if not isinstance(requested_modules, list) or not requested_modules:
+        logger.warning("[live-ws] start message missing modules: %s", start_msg)
         await ws.close(code=4003, reason="modules is required")
         return
 
     invalid = [m for m in requested_modules if m not in VALID_LIVE_STREAM_MODULES]
     if invalid:
+        logger.warning("[live-ws] invalid modules requested: %s", invalid)
         await ws.close(code=4003, reason=f"Invalid modules: {invalid}")
         return
 
     modules = cast(list[LiveStreamModule], requested_modules)
+    logger.info("[live-ws] start ok modules=%s", modules)
 
     async with async_session_factory() as parent_db:
         try:
             await validate_parent_live_session(parent_db, user, session_id)
         except InvalidParentLiveError:
+            logger.warning(
+                "[live-ws] parent live session invalid (session_id=%s)", session_id
+            )
             await ws.close(
                 code=4003, reason="session_id is not an active live session"
             )
@@ -193,13 +202,14 @@ async def live_session_stream_ws(
 
     supervisor = LiveStreamSupervisor(modules=modules, strike_sink=deliver_strike)
     await ws.send_json({"type": "ready"})
+    logger.info("[live-ws] sent ready, starting supervisor")
 
     reader_task = asyncio.create_task(read_client())
     supervisor_failed = False
     try:
         await supervisor.run(audio_iter())
     except Exception:
-        logger.exception("Live WS supervisor failed")
+        logger.exception("[live-ws] supervisor failed")
         supervisor_failed = True
     finally:
         # Always drain the reader task; cancelling twice is a no-op so
@@ -215,6 +225,9 @@ async def live_session_stream_ws(
         {"type": "error", "reason": "supervisor_failed"}
         if supervisor_failed
         else {"type": "session_ended"}
+    )
+    logger.info(
+        "[live-ws] closing (supervisor_failed=%s)", supervisor_failed
     )
     try:
         await ws.send_json(closing_message)
