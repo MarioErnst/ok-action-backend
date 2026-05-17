@@ -28,9 +28,12 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from decimal import Decimal
+
 from app.domain.entities.enums import ModuleEnum, SessionStatusEnum, TopEmotionEnum
 from app.domain.entities.facial_expression_metrics import FacialExpressionMetrics
 from app.domain.entities.muletillas_metrics import MuletillasMetrics
+from app.domain.entities.phonation_metrics import PhonationMetrics
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.use_cases.live.composed.prompts import ComposableModule
@@ -116,6 +119,8 @@ async def persist_composed_evaluation(
     modules: list[ComposableModule],
     gemini_response: dict,
     facial_summary: dict | None = None,
+    phonation_summary: dict | None = None,
+    loudness_summary: dict | None = None,
 ) -> list[tuple[Session, object]]:
     """Insert one child session + metrics row per selected module.
 
@@ -158,6 +163,44 @@ async def persist_composed_evaluation(
                 session_id=session_row.id,
                 fluency_score=_clamp_pct(section.get("fluency_score")),
                 muletillas_count=_safe_int(section.get("total_muletillas")),
+            )
+            db.add(metrics_row)
+            created.append((session_row, metrics_row))
+
+        elif module == "phonation":
+            if not phonation_summary:
+                continue
+            # Client computes avg_hz, stability_score and breaks_count
+            # from the AudioWorklet pitch frames. We trust the client
+            # to send 0-100 for stability and non-negative integers for
+            # counts; the entity CHECK constraint enforces the range.
+            try:
+                avg_hz = Decimal(str(phonation_summary.get("avg_hz", 0)))
+            except (TypeError, ValueError):
+                avg_hz = Decimal("0")
+            stability_score = _clamp_pct(phonation_summary.get("stability_score"))
+            breaks_count = _safe_int(phonation_summary.get("breaks_count"))
+            # Live session is a single recording, not an exercise count.
+            # We persist exercises_count=0 to make sessions created here
+            # honest about their origin.
+            session_row = Session(
+                user_id=user.id,
+                module=ModuleEnum.phonation,
+                parent_id=parent_live_id,
+                started_at=started_at,
+                ended_at=ended_at,
+                duration_ms=duration_ms,
+                score=stability_score,
+                status=SessionStatusEnum.completed,
+            )
+            db.add(session_row)
+            await db.flush()
+            metrics_row = PhonationMetrics(
+                session_id=session_row.id,
+                avg_hz=avg_hz,
+                stability_score=stability_score,
+                breaks_count=breaks_count,
+                exercises_count=0,
             )
             db.add(metrics_row)
             created.append((session_row, metrics_row))
