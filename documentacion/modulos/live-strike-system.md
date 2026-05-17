@@ -1,7 +1,7 @@
 # Sistema de Strikes en Sesión Live — Backend
 
 A partir de la branch `feature/live_corten` (mayo 2026), el strike system se basa
-en una conexión WebSocket bidireccional contra Gemini Live (`gemini-2.5-flash-native-audio-preview-12-2025`)
+en una conexión WebSocket bidireccional contra Gemini Live (`gemini-3.1-flash-live-preview`)
 con function calling. Cada strike corresponde a UN tool call que el modelo emite
 mientras escucha el audio del usuario en streaming. El umbral en el frontend pasa
 a **1 strike = corten inmediato**.
@@ -14,7 +14,7 @@ Este archivo cubre solo los cambios backend.
 | Aspecto | Antes (frame eval HTTP) | Ahora (Gemini Live WS) |
 |---|---|---|
 | Transporte | HTTP multipart por cada frame de 5-8s | WebSocket único por sesión, audio streaming continuo |
-| Modelo | `gemini-2.5-flash` con response_schema | `gemini-2.5-flash-native-audio-preview-12-2025` con function tools |
+| Modelo | `gemini-2.5-flash` con response_schema | `gemini-3.1-flash-live-preview` con function tools |
 | Detección | JSON estructurado por frame | Function call por error detectado (latencia sub-segundo) |
 | Umbral strike | 2 strikes por categoría | 1 strike por categoría |
 | Persistencia en vivo | Ninguna (frame eval era stateless) | Ninguna (los strikes son ephemeral) |
@@ -199,13 +199,20 @@ sesión Gemini limpio gracias al `async with` del wrapper.
   generados por LLM en BD" (los `transcript_snippet` y `suggestion` son
   exactamente eso).
 
-- **Modelo pineado por fecha**: usamos
-  `gemini-2.5-flash-native-audio-preview-12-2025`. La Developer API solo
-  expone los modelos Live como preview pineados a fecha; el GA real
-  (`gemini-live-2.5-flash-native-audio`) existe solo en Vertex AI. El
-  pin por fecha cumple la regla CLAUDE.md de evitar `*-latest`. Para
-  cambiar a `gemini-3.1-flash-live-preview` (más nuevo) o a un GA
-  futuro, basta con tocar `settings.gemini_live_model`.
+- **Modelo: `gemini-3.1-flash-live-preview`**. La Developer API solo
+  expone los modelos Live como preview; el GA real
+  (`gemini-live-2.5-flash-native-audio`) existe solo en Vertex AI.
+  Originalmente apuntamos a
+  `gemini-2.5-flash-native-audio-preview-12-2025`, pero ese modelo
+  expone un bug confirmado de Google: function calling provoca
+  desconexiones `1011 internal error` mid-stream (python-genai issue
+  #1832 y foro discuss.ai.google.dev sobre "Repeated 1011 Internal
+  error" en preview-12-2025). 3.1-flash-live-preview soporta tool
+  calling sincrónico (que es exactamente lo que el supervisor hace:
+  ack por cada call antes de continuar) y es el modelo que Google
+  recomienda para nuevas builds de voice agents. Cumple la regla
+  CLAUDE.md de evitar `*-latest`. Para cambiar a un GA futuro basta
+  con tocar `settings.gemini_live_model`.
 
 - **Tools son declaraciones agnósticas del SDK**: `streaming/tools.py` exporta
   diccionarios, no objetos genai. El wrapper los convierte a
