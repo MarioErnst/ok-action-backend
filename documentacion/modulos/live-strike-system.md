@@ -150,14 +150,19 @@ Config de la sesión:
   uso de tokens vs el modo conversacional natural. A cambio bajamos
   la latencia del corten de 15-20 s (turno completo) a 2-3 s.
 
-  Riesgo conocido: cuando el modelo recibe un `activity_end` sin
-  audio relevante en el turn, puede alucinar un tool call coherente
-  (incluyendo `transcript_snippet` plausible). El filtro anti-
-  alucinación basado en longitud de snippet **no** detecta esto. En
-  producción con audio real es raro, pero si los falsos positivos
-  pasan a ser un problema, el plan es agregar VAD local en el cliente
-  y pulsar `activity_end` solo cuando el cliente detecte silencio
-  real, en vez de un timer ciego.
+  Mitigación de alucinaciones: el supervisor calcula el RMS de cada
+  chunk PCM16 que llega del cliente y solo pulsa `activity_end` si
+  algún chunk del intervalo superó `_SPEECH_RMS_THRESHOLD` (200).
+  Cuando el alumno está callado durante el intervalo el pulse se
+  saltea y el modelo no es forzado a "responder" sobre silencio, lo
+  cual elimina la mayoría de las alucinaciones que aparecían con un
+  pulser ciego basado en timer. Los pulses skipeados se loguean como
+  `[supervisor] skipping pulse #N (silence)`.
+
+  Si en producción aparecen alucinaciones cuando el alumno habla en
+  voz muy baja (RMS bajo, threshold inflado), bajar
+  `_SPEECH_RMS_THRESHOLD` o reemplazar el threshold fijo por un
+  detector relativo al noise floor calibrado al inicio de la sesión.
 - `tools = [Tool(function_declarations=[FunctionDeclaration(**decl) for decl in build_tools_for_modules(modules)])]`.
 - `temperature = 0.3` para limitar falsos positivos.
 
