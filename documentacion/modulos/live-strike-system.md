@@ -31,10 +31,10 @@ que se mueven al composed-eval del cierre.
 
 | Módulo | Detección live | Detección al cierre (composed-eval) |
 |---|---|---|
-| `muletillas` | ✅ AssemblyAI + dictionary matcher | Igual a hoy |
-| `pronunciation` | ❌ no hay live-corten | ✅ composed-eval Gemini |
-| `accentuation` | ❌ no hay live-corten | ✅ composed-eval Gemini |
-| `facial_expression` | ✅ MediaPipe client-side (`useEmotionStop`) | ✅ payload `facial_summary` al cierre |
+| `muletillas` | Sí, AssemblyAI + dictionary matcher | Igual a hoy |
+| `pronunciation` | No hay live-corten | Sí, composed-eval Gemini |
+| `accentuation` | No hay live-corten | Sí, composed-eval Gemini |
+| `facial_expression` | Sí, MediaPipe client-side (`useEmotionStop`) | Sí, payload `facial_summary` al cierre |
 
 `LiveStreamModule` queda limitado al literal `"muletillas"` tanto en el backend
 (`use_cases/live/streaming/supervisor.py`) como en el frontend

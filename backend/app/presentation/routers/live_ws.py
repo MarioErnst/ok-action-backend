@@ -1,9 +1,11 @@
-"""WebSocket router for the Gemini Live streaming evaluator.
+"""WebSocket router for the live streaming evaluator.
 
 One WS per active live session. The client opens it after the parent
 live row is already created via POST /live/sessions and pushes raw
-audio bytes until the user stops. The server forwards everything to
-Gemini Live and pushes back one strike event per detected error.
+audio bytes until the user stops. The supervisor forwards the audio
+to AssemblyAI for verbatim transcription, runs the Spanish muletilla
+matcher on each final transcript, and pushes back one strike event
+per detected occurrence.
 
 Protocol on the wire:
 
@@ -11,7 +13,7 @@ Protocol on the wire:
   server -> client: {"type": "ready"}
   client -> server: <bytes>            # raw 16 kHz mono PCM chunks
   client -> server: {"type": "end"}    # graceful stop from the user
-  server -> client: {"type": "strike", ...}    # one per Gemini tool call
+  server -> client: {"type": "strike", ...}    # one per detected muletilla
   server -> client: {"type": "error", "reason": "..."}  # before close
   server: closes WS
 
@@ -59,7 +61,7 @@ router = APIRouter(prefix="/live", tags=["live"])
 # Bound how many audio chunks can wait in the in-memory bridge before
 # we start dropping the oldest. With 50 ms PCM 16 kHz chunks (1600
 # bytes), 64 entries is ~3 s of slack: enough to absorb network jitter,
-# small enough to keep latency low if Gemini's WS slows down.
+# small enough to keep latency low if AssemblyAI's WS slows down.
 _AUDIO_QUEUE_MAXSIZE = 64
 
 
