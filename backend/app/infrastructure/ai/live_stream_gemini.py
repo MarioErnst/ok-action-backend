@@ -110,15 +110,18 @@ class LiveStreamGeminiSession:
         # the system prompt asks the model to stay silent so the
         # emitted audio should be a short greeting at most.
         #
-        # Aggressive VAD is critical for our use-case. With the default
-        # end-of-speech sensitivity the model would buffer tool calls
-        # until the student paused for ~1 s of silence; if the student
-        # talks continuously for 20 s the corten arrives 20 s late,
-        # which defeats the whole point. We push end_of_speech to HIGH
-        # and silence_duration_ms to 300 so natural between-phrase
-        # pauses (which last ~200-500 ms in spontaneous Spanish)
-        # already count as end-of-turn and force the model to flush
-        # any pending tool calls.
+        # Manual activity control is critical for our use-case. The
+        # default automatic VAD only emits tool calls at end-of-turn
+        # (detected by silence), so a student talking continuously for
+        # 20 s gets no corten until they pause. Aggressive VAD did not
+        # help in practice — Gemini still waited for a clear silence.
+        # We disable the automatic detector and let the supervisor
+        # fire activity_end every couple of seconds to force the model
+        # to process what it heard so far and emit any pending tool
+        # calls. NO_INTERRUPTION keeps in-flight tool calls flowing
+        # when a new activity starts; TURN_INCLUDES_ALL_INPUT ensures
+        # audio that arrives between activity_end and the next
+        # activity_start is not dropped.
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
             system_instruction=build_live_streaming_prompt(self._modules),
@@ -137,10 +140,10 @@ class LiveStreamGeminiSession:
             temperature=0.3,
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
-                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=300,
-                    prefix_padding_ms=0,
+                    disabled=True,
                 ),
+                activity_handling=types.ActivityHandling.NO_INTERRUPTION,
+                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
             ),
         )
         logger.info(
@@ -199,6 +202,32 @@ class LiveStreamGeminiSession:
             return
         async with self._send_lock:
             await self._session.send_realtime_input(audio_stream_end=True)
+
+    async def send_activity_start(self) -> None:
+        """Mark the beginning of a user activity window.
+
+        Required when the automatic activity detector is disabled in
+        the session config: until activity_start is sent, the model
+        treats incoming audio as out-of-turn and may discard it.
+        """
+
+        session = self._require_session()
+        async with self._send_lock:
+            await session.send_realtime_input(activity_start=types.ActivityStart())
+
+    async def send_activity_end(self) -> None:
+        """Mark the end of a user activity window.
+
+        This forces the model to treat what it has heard since the
+        previous activity_start as a complete turn, evaluate it and
+        emit any pending tool calls. The supervisor pulses this every
+        few seconds to keep tool calls flowing in near-real-time even
+        when the student speaks continuously.
+        """
+
+        session = self._require_session()
+        async with self._send_lock:
+            await session.send_realtime_input(activity_end=types.ActivityEnd())
 
     async def iter_tool_calls(self) -> AsyncIterator[LiveToolCall]:
         """Yield every function call the model emits.

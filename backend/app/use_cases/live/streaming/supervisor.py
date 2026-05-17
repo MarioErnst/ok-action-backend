@@ -58,6 +58,16 @@ _MIN_SNIPPET_CHARS = 4
 _VALID_SEVERITIES = frozenset({"low", "medium", "high"})
 
 
+# Period between forced activity_end -> activity_start pulses. Each
+# pulse closes the current "turn" so the model evaluates what it has
+# heard and emits any pending tool calls. Smaller values reduce the
+# corten latency but increase token usage (one model "response" per
+# pulse). 2 seconds is a workable middle ground for a teaching tool
+# that needs sub-3-second corten without flooding the model with
+# end-of-turn signals.
+_ACTIVITY_PULSE_SECONDS = 2.0
+
+
 @dataclass(frozen=True)
 class StrikeEvent:
     """Strike event that the supervisor emits towards the client.
@@ -114,7 +124,16 @@ class LiveStreamSupervisor:
         gemini = LiveStreamGeminiSession(modules=self._modules)
         async with gemini.open() as g:
             self._gemini = g
+            # Manual activity control: open the first turn explicitly,
+            # spawn the receive loop, and start the pulser that forces
+            # end-of-turn every few seconds so the model emits pending
+            # tool calls without waiting for the student to pause.
+            await g.send_activity_start()
             self._receive_task = asyncio.create_task(self._receive_loop(g))
+            pulser_stop = asyncio.Event()
+            pulser_task = asyncio.create_task(
+                self._activity_pulser(g, pulser_stop)
+            )
             chunks_received = 0
             bytes_received = 0
             try:
@@ -137,8 +156,16 @@ class LiveStreamSupervisor:
                 )
                 # Tell the model the user stopped pushing audio so it
                 # flushes any pending evaluation before we tear down.
+                await g.send_activity_end()
                 await g.signal_audio_end()
             finally:
+                pulser_stop.set()
+                if not pulser_task.done():
+                    pulser_task.cancel()
+                    try:
+                        await pulser_task
+                    except asyncio.CancelledError:
+                        pass
                 if self._receive_task and not self._receive_task.done():
                     self._receive_task.cancel()
                     try:
@@ -148,6 +175,36 @@ class LiveStreamSupervisor:
                 self._receive_task = None
                 self._gemini = None
                 logger.info("[supervisor] finished")
+
+    async def _activity_pulser(
+        self,
+        gemini: LiveStreamGeminiSession,
+        stop_event: asyncio.Event,
+    ) -> None:
+        """Pulse activity_end -> activity_start every N seconds."""
+
+        pulse_count = 0
+        try:
+            while not stop_event.is_set():
+                try:
+                    await asyncio.wait_for(
+                        stop_event.wait(), timeout=_ACTIVITY_PULSE_SECONDS
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                pulse_count += 1
+                logger.info("[supervisor] activity pulse #%d", pulse_count)
+                try:
+                    await gemini.send_activity_end()
+                    await gemini.send_activity_start()
+                except Exception as exc:
+                    logger.warning(
+                        "[supervisor] activity pulse failed: %s", exc
+                    )
+                    return
+        finally:
+            logger.info("[supervisor] activity pulser stopped after %d pulses", pulse_count)
 
     async def _receive_loop(self, gemini: LiveStreamGeminiSession) -> None:
         """Pull tool calls from Gemini and forward valid strikes."""
