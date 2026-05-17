@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = Field(default_factory=list)
 
+    # AssemblyAI Streaming STT. Used by the live muletilla detector;
+    # the supervisor opens one WS to AssemblyAI per active live session
+    # and matches transcripts against a Spanish filler-word dictionary.
+    assemblyai_api_key: str
+
     # Gemini AI
     gemini_api_key: str
     # Streaming live model id for the Gemini Developer API (api_key).
