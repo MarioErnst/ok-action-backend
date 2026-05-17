@@ -94,13 +94,23 @@ class LiveStreamGeminiSession:
         # bytes in the WS frame. Live API expects whole audio blobs, not
         # spliced fragments, so we serialize sends.
         self._send_lock = asyncio.Lock()
+        # Lightweight counter for diagnostic logs at predictable
+        # checkpoints (1, 10, 100, 1000, 2000, ...) so a stuck pipeline
+        # is visible without flooding the log with every chunk.
+        self._chunks_sent = 0
 
     def open(self) -> "_LiveOpenContext":
         return _LiveOpenContext(self)
 
     async def _enter(self) -> None:
+        # Live models on the Gemini Developer API (api_key) reject
+        # response_modalities=[TEXT]. They are designed to emit audio.
+        # We declare AUDIO to satisfy the contract and then discard
+        # every server message except tool calls in iter_tool_calls();
+        # the system prompt asks the model to stay silent so the
+        # emitted audio should be a short greeting at most.
         config = types.LiveConnectConfig(
-            response_modalities=[types.Modality.TEXT],
+            response_modalities=[types.Modality.AUDIO],
             system_instruction=build_live_streaming_prompt(self._modules),
             tools=[
                 types.Tool(
@@ -116,27 +126,30 @@ class LiveStreamGeminiSession:
             # student.
             temperature=0.3,
         )
+        logger.info(
+            "[live-gemini] opening Live WS (model=%s, modules=%s)",
+            settings.gemini_live_model,
+            self._modules,
+        )
         self._session_cm = self._client.aio.live.connect(
             model=settings.gemini_live_model,
             config=config,
         )
         self._session = await self._session_cm.__aenter__()
-        logger.info(
-            "Live Gemini WS opened (model=%s, modules=%s)",
-            settings.gemini_live_model,
-            self._modules,
-        )
+        logger.info("[live-gemini] Live WS opened")
 
     async def aclose(self) -> None:
         if self._session_cm is None:
             return
+        logger.info("[live-gemini] closing Live WS")
         try:
             await self._session_cm.__aexit__(None, None, None)
         except Exception as exc:
-            logger.warning("Error closing Live Gemini WS: %s", exc)
+            logger.warning("[live-gemini] error closing Live WS: %s", exc)
         finally:
             self._session = None
             self._session_cm = None
+            logger.info("[live-gemini] Live WS closed")
 
     async def send_audio_chunk(self, pcm_bytes: bytes) -> None:
         """Forward a raw 16 kHz mono PCM chunk to the live model.
@@ -153,6 +166,9 @@ class LiveStreamGeminiSession:
             await session.send_realtime_input(
                 audio=types.Blob(data=pcm_bytes, mime_type=_AUDIO_MIME),
             )
+        self._chunks_sent += 1
+        if self._chunks_sent in (1, 10, 100, 1000) or self._chunks_sent % 1000 == 0:
+            logger.info("[live-gemini] chunks sent: %d", self._chunks_sent)
 
     async def signal_audio_end(self) -> None:
         """Tell the model the user stopped sending audio for now.
@@ -184,6 +200,12 @@ class LiveStreamGeminiSession:
             function_calls = getattr(tool_call, "function_calls", None) or []
             for fc in function_calls:
                 args = dict(fc.args) if fc.args else {}
+                logger.info(
+                    "[live-gemini] tool call received: name=%s id=%s args_keys=%s",
+                    fc.name,
+                    fc.id,
+                    list(args.keys()),
+                )
                 yield LiveToolCall(id=fc.id or "", name=fc.name or "", args=args)
 
     async def ack_tool_call(self, call: LiveToolCall) -> None:

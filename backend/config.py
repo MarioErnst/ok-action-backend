@@ -24,9 +24,12 @@ class Settings(BaseSettings):
 
     # Gemini AI
     gemini_api_key: str
-    # Streaming live model. Pinned GA id, not an alias. The live session
-    # supervisor opens one WS to this model per active live session.
-    gemini_live_model: str = "gemini-live-2.5-flash-native-audio"
+    # Streaming live model id for the Gemini Developer API (api_key).
+    # The "GA" id `gemini-live-2.5-flash-native-audio` exists only on
+    # Vertex AI; the Developer API exposes the same underlying model
+    # as a date-pinned preview. We pin to the 12-2025 build instead of
+    # the `*-latest` alias to comply with the no-aliases rule.
+    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
 
     # Backblaze B2 (S3-compatible storage)
     s3_bucket: str = "ok-actionbucket"
