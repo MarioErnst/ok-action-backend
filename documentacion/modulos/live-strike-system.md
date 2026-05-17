@@ -1,7 +1,7 @@
 # Sistema de Strikes en Sesión Live — Backend
 
 A partir de la branch `feature/live_corten` (mayo 2026), el strike system se basa
-en una conexión WebSocket bidireccional contra Gemini Live (`gemini-live-2.5-flash-native-audio`)
+en una conexión WebSocket bidireccional contra Gemini Live (`gemini-2.5-flash-native-audio-preview-12-2025`)
 con function calling. Cada strike corresponde a UN tool call que el modelo emite
 mientras escucha el audio del usuario en streaming. El umbral en el frontend pasa
 a **1 strike = corten inmediato**.
@@ -14,7 +14,7 @@ Este archivo cubre solo los cambios backend.
 | Aspecto | Antes (frame eval HTTP) | Ahora (Gemini Live WS) |
 |---|---|---|
 | Transporte | HTTP multipart por cada frame de 5-8s | WebSocket único por sesión, audio streaming continuo |
-| Modelo | `gemini-2.5-flash` con response_schema | `gemini-live-2.5-flash-native-audio` con function tools |
+| Modelo | `gemini-2.5-flash` con response_schema | `gemini-2.5-flash-native-audio-preview-12-2025` con function tools |
 | Detección | JSON estructurado por frame | Function call por error detectado (latencia sub-segundo) |
 | Umbral strike | 2 strikes por categoría | 1 strike por categoría |
 | Persistencia en vivo | Ninguna (frame eval era stateless) | Ninguna (los strikes son ephemeral) |
@@ -125,7 +125,13 @@ Métodos:
 - `ack_tool_call(call)` envía FunctionResponse vacío para que el modelo avance.
 
 Config de la sesión:
-- `response_modalities = [Modality.TEXT]` → sin audio output.
+- `response_modalities = [Modality.AUDIO]`. Los modelos Live de la Gemini
+  Developer API (la que se usa con `api_key`) rechazan TEXT como única
+  modalidad — solo Vertex AI ofrece la variante half-cascade que sí lo
+  permite. Pedimos AUDIO y descartamos todo el output del modelo en
+  `iter_tool_calls` (solo yield-eamos `tool_call`); el system prompt
+  pide silencio así que el audio emitido tiende a ser un saludo corto a
+  lo sumo.
 - `system_instruction = build_live_streaming_prompt(modules)`.
 - `tools = [Tool(function_declarations=[FunctionDeclaration(**decl) for decl in build_tools_for_modules(modules)])]`.
 - `temperature = 0.3` para limitar falsos positivos.
@@ -193,8 +199,13 @@ sesión Gemini limpio gracias al `async with` del wrapper.
   generados por LLM en BD" (los `transcript_snippet` y `suggestion` son
   exactamente eso).
 
-- **Modelo pineado a GA**: `gemini-live-2.5-flash-native-audio` es el ID
-  estable. No usamos preview ni aliases.
+- **Modelo pineado por fecha**: usamos
+  `gemini-2.5-flash-native-audio-preview-12-2025`. La Developer API solo
+  expone los modelos Live como preview pineados a fecha; el GA real
+  (`gemini-live-2.5-flash-native-audio`) existe solo en Vertex AI. El
+  pin por fecha cumple la regla CLAUDE.md de evitar `*-latest`. Para
+  cambiar a `gemini-3.1-flash-live-preview` (más nuevo) o a un GA
+  futuro, basta con tocar `settings.gemini_live_model`.
 
 - **Tools son declaraciones agnósticas del SDK**: `streaming/tools.py` exporta
   diccionarios, no objetos genai. El wrapper los convierte a
@@ -211,11 +222,42 @@ sesión Gemini limpio gracias al `async with` del wrapper.
   antes de mandarlo. No usamos webm/opus aquí porque el modelo Live evita el
   decoder y opera sobre PCM crudo.
 
-## 11. Pendientes
+## 11. Logging diagnóstico
+
+Todas las capas del pipeline emiten `logger.info` con un prefijo
+identificable para poder rastrear fallas sin habilitar debug:
+
+| Prefijo | Origen |
+|---|---|
+| `[live-ws]` | Router WS: accept, auth, validación de modules/parent, ready, supervisor outcome, close |
+| `[supervisor]` | Orquestador: start, audio iterator drained, strike emitido o descartado y motivo |
+| `[live-gemini]` | Wrapper genai: open, close, errores, tool call recibido, contador de chunks enviados (1, 10, 100, 1000, ...) |
+
+Una sesión saludable produce algo así en orden:
+
+```
+[live-ws] WS accepted for session_id=...
+[live-ws] auth ok user_id=...
+[live-ws] start ok modules=[...]
+[live-ws] sent ready, starting supervisor
+[supervisor] starting (modules=[...])
+[live-gemini] opening Live WS (model=..., modules=[...])
+[live-gemini] Live WS opened
+[live-gemini] chunks sent: 1
+[live-gemini] chunks sent: 10
+[live-gemini] tool call received: name=flag_muletilla id=... args_keys=[...]
+[supervisor] strike emitted category=muletillas word='este' severity=low
+...
+[supervisor] audio iterator drained, signaling end
+[supervisor] finished
+[live-gemini] closing Live WS
+[live-gemini] Live WS closed
+[live-ws] closing (supervisor_failed=False)
+```
+
+## 12. Pendientes
 
 - Escalamiento: una WS por usuario simultáneo. Validar el límite de Cloud Run
   antes de subir a producción real.
-- Métricas operacionales: agregar logging estructurado para tool call rate y
-  rate de descarte por filtro anti-alucinación.
 - Tests del supervisor con un fake `LiveStreamGeminiSession` que emita tool
   calls sintéticos.
