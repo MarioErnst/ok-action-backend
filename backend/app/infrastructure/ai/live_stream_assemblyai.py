@@ -20,11 +20,17 @@ Why we wrap the SDK at all instead of hand-rolling the WebSocket:
   the SDK dependency.
 - It will track new server features as AssemblyAI ships them.
 
+What we do wrap:
+- Both partial and final TurnEvents. Final turns are still the
+  authoritative source for transcription, but partials are emitted as
+  the model recognizes new audio (every ~100-300 ms). The supervisor
+  runs the matcher on each partial and uses a per-turn stability
+  tracker to decide which matches are confirmed enough to fire a
+  strike before the turn closes — without that we depend on a user
+  pause for the corten to ever fire, which is exactly the failure
+  mode users hit in fluent free-speech sessions.
+
 What we do not wrap:
-- Partial turns. We only forward `end_of_turn=True` transcripts; that
-  is what the matcher in `muletillas_dictionary` needs. Partials get
-  rewritten as the model gains context and would cause flicker in the
-  strike pipeline.
 - Errors at the SDK level. We log them and drain the iterator; the
   supervisor decides what to do (today it tears down the session).
 """
@@ -33,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import AsyncIterator
 
 from assemblyai.streaming.v3 import (
@@ -47,6 +54,21 @@ from config import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TurnTranscript:
+    """One transcript update from AssemblyAI.
+
+    `is_final` distinguishes between live partials (which get
+    rewritten as the model gains context) and the authoritative
+    final emitted when the turn closes. The supervisor uses the
+    partials to fire early strikes and the final as the source of
+    truth for any match that did not stabilize through partials.
+    """
+
+    text: str
+    is_final: bool
 
 
 # Universal-3 Pro Streaming model id, pinned (CLAUDE.md rule against
@@ -118,17 +140,17 @@ class AssemblyAIStreamingSession:
 
         async with AssemblyAIStreamingSession().open() as session:
             asyncio.create_task(forward_chunks(session))
-            async for transcript in session.iter_final_transcripts():
-                ...
+            async for turn in session.iter_turn_transcripts():
+                ...  # turn.text + turn.is_final
     """
 
     def __init__(self):
         self._client = StreamingClient(
             StreamingClientOptions(api_key=settings.assemblyai_api_key)
         )
-        # Queue of final transcripts the SDK delivers via callbacks.
-        # `None` is the close sentinel used by `aclose`.
-        self._final_queue: asyncio.Queue[str | None] | None = None
+        # Queue of turn transcripts (partial or final) the SDK delivers
+        # via callbacks. `None` is the close sentinel used by `aclose`.
+        self._turn_queue: asyncio.Queue[TurnTranscript | None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = False
 
@@ -137,7 +159,7 @@ class AssemblyAIStreamingSession:
 
     async def _enter(self) -> None:
         self._loop = asyncio.get_running_loop()
-        self._final_queue = asyncio.Queue()
+        self._turn_queue = asyncio.Queue()
         self._wire_handlers()
 
         params = StreamingParameters(
@@ -147,10 +169,12 @@ class AssemblyAIStreamingSession:
             keyterms_prompt=_KEYTERMS,
             max_turn_silence=_MAX_TURN_SILENCE_MS,
             end_of_turn_confidence_threshold=_END_OF_TURN_CONFIDENCE_THRESHOLD,
+            include_partial_turns=True,
         )
         logger.info(
             "[live-assemblyai] opening Streaming WS (model=%s, sample_rate=%d, "
-            "max_turn_silence=%dms, end_of_turn_confidence_threshold=%.2f)",
+            "max_turn_silence=%dms, end_of_turn_confidence_threshold=%.2f, "
+            "partials=on)",
             _MODEL,
             _SAMPLE_RATE,
             _MAX_TURN_SILENCE_MS,
@@ -166,15 +190,23 @@ class AssemblyAIStreamingSession:
         """Register SDK callbacks that publish into the async queue."""
 
         def on_turn(_self, event: TurnEvent) -> None:
-            if not event.end_of_turn:
-                return
             transcript = (event.transcript or "").strip()
             if not transcript:
                 return
-            logger.info(
-                "[live-assemblyai] turn final: %r", transcript
+            # Partials arrive very frequently (every ~100-300 ms) so we
+            # keep the log line compact. Finals stay loud because they
+            # are the audit point and far less frequent.
+            if event.end_of_turn:
+                logger.info(
+                    "[live-assemblyai] turn final: %r", transcript
+                )
+            else:
+                logger.debug(
+                    "[live-assemblyai] turn partial: %r", transcript
+                )
+            self._publish(
+                TurnTranscript(text=transcript, is_final=bool(event.end_of_turn))
             )
-            self._publish(transcript)
 
         def on_error(_self, error) -> None:
             logger.warning("[live-assemblyai] error event: %s", error)
@@ -189,13 +221,13 @@ class AssemblyAIStreamingSession:
         self._client.on(StreamingEvents.Error, on_error)
         self._client.on(StreamingEvents.Termination, on_termination)
 
-    def _publish(self, item: str | None) -> None:
+    def _publish(self, item: TurnTranscript | None) -> None:
         """Marshal a value from any thread into the async queue."""
 
-        if self._loop is None or self._final_queue is None:
+        if self._loop is None or self._turn_queue is None:
             return
         try:
-            self._loop.call_soon_threadsafe(self._final_queue.put_nowait, item)
+            self._loop.call_soon_threadsafe(self._turn_queue.put_nowait, item)
         except RuntimeError:
             # Loop is already closed (we are tearing down). Drop.
             pass
@@ -212,16 +244,16 @@ class AssemblyAIStreamingSession:
             return
         await asyncio.to_thread(self._client.stream, pcm_bytes)
 
-    async def iter_final_transcripts(self) -> AsyncIterator[str]:
-        """Yield each finalized transcript the model emits.
+    async def iter_turn_transcripts(self) -> AsyncIterator[TurnTranscript]:
+        """Yield each turn transcript the model emits (partial or final).
 
         Returns when the SDK signals termination or an error.
         """
 
-        if self._final_queue is None:
+        if self._turn_queue is None:
             raise RuntimeError("AssemblyAIStreamingSession is not open")
         while True:
-            item = await self._final_queue.get()
+            item = await self._turn_queue.get()
             if item is None:
                 return
             yield item
