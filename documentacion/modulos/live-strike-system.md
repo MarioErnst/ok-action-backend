@@ -124,18 +124,21 @@ Configuración de la sesión (`StreamingParameters`):
 - `keyterms_prompt=[...]` con las muletillas como boost de keyterms.
 - `max_turn_silence=400` (ms). Forza el cierre del turn cuando hay 400 ms de
   silencio aunque el detector inteligente de fin de turno no llegue a su
-  umbral de confianza. El default de servidor (~2400 ms) era demasiado largo
-  y la primera prueba con 800 ms tampoco alcanzó: un usuario hablando 20 s
-  seguidos sin pausas largas no generaba turns intermedios.
+  umbral de confianza. El default de servidor (~2400 ms) era demasiado largo.
 - `end_of_turn_confidence_threshold=0.4` (default 0.7). Relaja el umbral
   prosódico que el detector inteligente necesita para cerrar un turn por
-  cuenta propia. Combinado con el `max_turn_silence` más bajo, maximiza la
-  emisión de turns intermedios para que el corten pueda disparar a mitad de
-  un discurso fluido.
+  cuenta propia.
+- `include_partial_turns=True`. AssemblyAI emite además del final un evento
+  por cada actualización del transcript parcial (~100-300 ms). El wrapper
+  expone partials Y finals (`TurnTranscript.is_final`) y el supervisor usa
+  los partials para disparar el corten antes de que termine el turn: sin
+  esto el corten dependía de que el usuario hiciera una pausa para que se
+  cerrara un turn, lo cual no siempre ocurre en habla fluida.
 
-El wrapper solo expone `iter_final_transcripts()` para el supervisor; los
-partials se ignoran porque AssemblyAI corrige el partial conforme gana
-contexto y dispararíamos strikes que después se "borraban".
+El wrapper expone `iter_turn_transcripts()` que entrega
+`TurnTranscript(text, is_final)`. El supervisor decide qué hacer con cada
+uno: los partials alimentan al tracker de estabilidad y los finals son la
+red de seguridad (ver §7.2).
 
 **Cierre crítico**: `aclose()` siempre llama `disconnect(terminate=True)` para
 emitir el mensaje `Terminate`. Una sesión abandonada sigue facturando hasta el
@@ -169,33 +172,57 @@ El diccionario `muletillas_dictionary.py` divide los unigrams en dos grupos:
   pues`. Tienen significado real en español ("ningún tipo de", "este auto",
   "pues bien"). El dataclass `MuletillaMatch` los marca con `is_ambiguous=True`.
 
-El supervisor procesa cada transcript así:
+Para cada lote de matches que el supervisor decide procesar (ver §7.2):
 
-1. Matcher local extrae todos los matches con su flag de ambigüedad (<5 ms).
-2. Si hay matches ambiguos, dispara una llamada Gemini Flash-Lite
-   (`muletillas_context_classifier_gemini.py`, text-only, `temperature=0`) en
-   background.
-3. Los inequívocos se emiten inmediatamente al sink (latencia ~0 ms desde el
+1. Los inequívocos se emiten inmediatamente al sink (latencia ~0 ms desde el
    matcher) sin esperar al LLM. Como el umbral de corten del frontend es 1
    strike, el primer `eh` corta sin pagar el costo del LLM.
-4. Cuando el classifier responde, los ambiguos confirmados se emiten; los
+2. Si hay matches ambiguos, dispara una llamada Gemini Flash-Lite en
+   background (`muletillas_context_classifier_gemini.py`, text-only,
+   `temperature=0`).
+3. Cuando el classifier responde, los ambiguos confirmados se emiten; los
    rechazados se descartan (con log explícito por palabra).
-5. **Fallback de seguridad**: si la llamada al classifier falla
+4. **Fallback de seguridad**: si la llamada al classifier falla
    (`MuletillaContextClassifierError` por red, timeout o respuesta inválida),
-   se descartan TODOS los ambiguos del turn — precision-first. Es preferible
-   perder una detección real de `tipo` que cortar al usuario por
-   "ningún tipo de".
+   se descartan TODOS los ambiguos del lote — precision-first.
 
 **Modelo y costo**:
 - `gemini-2.5-flash-lite` (pineado, sin alias `latest`).
-- Solo texto, no audio: el transcript ya tiene toda la información que el
-  modelo necesita y mandar el audio doblaría el tamaño del request sin ganar
-  precisión.
-- Latencia warm observada en pruebas locales: ~900-1300 ms por llamada.
-  Esto solo se suma al strike si hay ambiguos en ese turn y solo si los
-  ambiguos llegan antes que los inequívocos del mismo turn (caso raro: los
-  inequívocos disparan corten primero por el umbral del frontend).
-- Costo: orden de $0.0001 USD por turn con candidatos ambiguos.
+- Solo texto, no audio.
+- Latencia warm observada: ~900-1300 ms por llamada.
+- Costo: orden de $0.0001 USD por llamada con candidatos.
+
+### 7.2 Detección sobre partials con dedupe por estabilidad
+
+AssemblyAI ahora emite partials además del final. El supervisor mantiene un
+tracker (`_TurnStabilityTracker`) por turn que decide qué partial-matches
+son confiables como para emitir un strike antes del final.
+
+**Estabilidad**: una match cuenta como estable cuando aparece en N partials
+consecutivos en la misma posición `(word, start_char)`. `N` está pineado en
+`_STABILITY_THRESHOLD = 3`. Esto da ~300-500 ms de latencia extra sobre un
+"fire on first appearance" pero filtra correcciones transitorias del modelo
+(p. ej. `ehhh` reescrito como `es` en el partial siguiente).
+
+**Reset**: el tracker se resetea en cada final (`is_final=True`). Cada turn
+empieza fresco.
+
+**Final fallback**: si una match nunca llegó a aparecer en 3 partials
+consecutivos (turn cortísimo o reordenamiento del modelo) pero aparece en
+el final, se emite desde el final. Es estrictamente peor latencia pero
+nunca menos detección que el flujo antiguo de "solo finals".
+
+**Por qué partials hace la diferencia**: con solo finals el strike depende
+de que el usuario pause para que se cierre un turn. Con partials el modelo
+emite cada ~100-300 ms y el tracker dispara en cuanto la palabra es
+confiable, sin esperar pausa. Cubre el caso del usuario que habla 30 s
+seguidos sin hacer pausas detectables.
+
+**Logging**: cada batch procesado emite una línea que indica si vino de un
+`source=partial` o `source=final`, y cada STRIKE marca `source=` también.
+La línea final de sesión separa `strikes_from_partial` vs
+`strikes_from_final` para poder medir cuánto está pagando partials en la
+práctica.
 
 ## 8. Logging diagnóstico
 
@@ -207,23 +234,25 @@ Prefijos:
 | `[supervisor]` | Orquestador: start, audio iterator drained, strike emitido, contadores, timings |
 | `[live-assemblyai]` | Wrapper SDK: open (incluye `max_turn_silence`), close, transcripts finales, errors |
 
-Cada transcript procesado emite una línea con el desglose de tiempos para
-poder dimensionar la latencia real del corten:
+Cada batch procesado emite una línea con el desglose de tiempos:
 
 ```
-[supervisor] transcript processed (matches=3 unambiguous=2 ambiguous=1
-  confirmed=1 matcher_ms=0 unambiguous_emit_ms=0 classifier_ms=1254
-  total_ms=1254)
+[supervisor] batch processed source=partial (matches=1 unambiguous=1
+  ambiguous=0 confirmed=0 unambiguous_emit_ms=0 classifier_ms=skipped
+  total_ms=0)
 ```
 
-- `matcher_ms`: tiempo del matcher local (siempre ~0 ms).
-- `unambiguous_emit_ms`: tiempo desde el matcher hasta que terminaron de
-  emitirse los inequívocos. Es la latencia que ve el frontend para los
+- `source`: `partial` cuando el batch vino del tracker de estabilidad, `final`
+  cuando vino del fallback al cierre del turn.
+- `unambiguous_emit_ms`: tiempo desde el inicio del batch hasta que terminaron
+  de emitirse los inequívocos. Es la latencia que ve el frontend para los
   inequívocos.
 - `classifier_ms`: tiempo total de la llamada a Gemini Flash-Lite, o
   `skipped` si no hubo ambiguos.
-- `total_ms`: tiempo desde que llegó el transcript hasta que terminó el
-  procesamiento. Para sesiones sin ambiguos es ~`matcher_ms`.
+- `total_ms`: tiempo total del batch.
+
+Y cada STRIKE marca `source=partial|final` para diagnosticar qué porcentaje
+del corten viene de partials (lo deseable) vs finals (la red de seguridad).
 
 Sesión saludable (con un ambiguo descartado por el classifier):
 
@@ -258,10 +287,12 @@ ASSEMBLYAI_API_KEY=...   # cargada por config.Settings.assemblyai_api_key
 
 ## 10. Decisiones de diseño
 
-- **Solo finals, no partials**: confiabilidad sobre velocidad marginal. Un
-  partial puede mutar mientras la frase avanza; un strike disparado por
-  partial podría corregirse en la siguiente actualización y dejar al usuario
-  cortado por nada.
+- **Partials con dedupe por estabilidad**: la versión original procesaba solo
+  finals para evitar disparos por correcciones del modelo, pero eso obligaba
+  a que el usuario pausara para que se cerrara un turn. La solución es leer
+  los partials y solo disparar cuando una palabra aparece en N partials
+  consecutivos en la misma posición. Mantiene la propiedad anti-falso-positivo
+  y baja la latencia esperada de ~varios segundos a ~300-500 ms.
 - **Diccionario en backend, no STT-side**: AssemblyAI no filtra muletillas
   por idioma (su parámetro `filler_words` es solo inglés). Hacemos el filtro
   acá con un conjunto que es trivialmente editable cuando aparecen casos
