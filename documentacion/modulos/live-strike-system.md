@@ -200,9 +200,15 @@ son confiables como para emitir un strike antes del final.
 
 **Estabilidad**: una match cuenta como estable cuando aparece en N partials
 consecutivos en la misma posición `(word, start_char)`. `N` está pineado en
-`_STABILITY_THRESHOLD = 3`. Esto da ~300-500 ms de latencia extra sobre un
-"fire on first appearance" pero filtra correcciones transitorias del modelo
-(p. ej. `ehhh` reescrito como `es` en el partial siguiente).
+`_STABILITY_THRESHOLD = 1` ("emite al primer partial que la contiene"). El
+diseño original era 3 para filtrar correcciones transitorias del modelo, pero
+en pruebas reales Universal-3 Pro Streaming emite tan pocos partials por turn
+(1-2 en discursos largos) que un threshold mayor a 1 deja al corten cayendo
+siempre al final fallback. Universal-3 Pro es un transcriber, no un modelo
+conversacional, y rara vez reescribe palabras una vez ubicadas — por eso
+emitir al primer partial es aceptable. Si en sesiones reales aparecen
+falsos positivos persistentes podemos subir el threshold cuando el modelo
+empiece a emitir partials con más densidad.
 
 **Reset**: el tracker se resetea en cada final (`is_final=True`). Cada turn
 empieza fresco.

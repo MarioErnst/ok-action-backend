@@ -59,13 +59,17 @@ from app.use_cases.live.streaming.muletillas_dictionary import (
 
 # Number of consecutive partials a match must appear in (at the same
 # word + start_char position) before we trust it enough to fire a
-# strike. Three matches at ~150 ms per partial gives roughly 300-500 ms
-# extra latency over a "fire on first appearance" approach in exchange
-# for filtering transient model corrections — the model sometimes
-# emits "ehhh" in one partial and rewrites it to a normal word in the
-# next. Tunable if real sessions show too many missed detections or
-# false positives.
-_STABILITY_THRESHOLD = 3
+# strike. Empirically AssemblyAI Universal-3 Pro Streaming emits very
+# few partials per turn (1-2 in long discourses) so a higher threshold
+# starves the live corten: matches never stabilize and always fall to
+# the final fallback. Threshold = 1 means "emit on first partial
+# appearance". The risk of the model rewriting an early partial is
+# tolerable: Universal-3 Pro is a transcriber (not a conversational
+# model) so it rarely walks back filler-word tokens once it has placed
+# them. If we ever observe enough false positives from this mode we can
+# bump it back to 2 — but that requires the model to actually emit
+# multiple partials per turn, which today it does not.
+_STABILITY_THRESHOLD = 1
 
 
 class _TurnStabilityTracker:
