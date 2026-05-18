@@ -119,9 +119,12 @@ Multipart `POST /live/sessions/{id}/audio-evaluation` con campos:
 | Campo | Tipo | Requerido | Descripción |
 |-------|------|-----------|-------------|
 | `audio` | UploadFile | sí | Blob del MediaRecorder (`audio/webm` en Chrome/Android, `audio/mp4` en iOS Safari). |
-| `modules` | repeated form (`modules=muletillas&modules=consistency`) | sí | Subconjunto no vacío de `{muletillas, accentuation, pronunciation, consistency}`. |
+| `modules` | repeated form (`modules=muletillas&modules=phonation`) | sí | Subconjunto no vacío de `{muletillas, facial_expression, phonation, loudness}`. |
 | `started_at` | datetime ISO | sí | Timestamp del cliente cuando comenzó la captura. El backend confía porque sólo afecta a la duración propia del usuario. |
 | `prompt_text` | string | no | Consigna libre (opcional). Se incluye como contexto en el prompt compuesto. |
+| `facial_summary` | JSON string | si `facial_expression` en `modules` | Siete porcentajes de emociones (`happy_pct`...`neutral_pct`) computados en cliente. |
+| `phonation_summary` | JSON string | si `phonation` en `modules` | `{avg_hz, stability_score, breaks_count}` computado client-side desde el AudioWorklet. |
+| `loudness_summary` | JSON string | si `loudness` en `modules` | `{preset_id, optimal_pct, low_pct, high_pct, clipping_pct, peak_db, noise_floor_db}` computado client-side. |
 
 Respuesta `200 ComposedAudioEvaluationResponse`:
 
@@ -160,11 +163,14 @@ Cuando `audio_intelligible=false`, el endpoint responde `200` pero `children` es
 
 ### Decisiones de diseño
 
-- **Prompts y schemas separados por módulo**: cada uno expone su sección de prompt y su sección de JSON schema como constantes privadas. El composer arma dinámicamente la unión según los módulos seleccionados. Cambiar un criterio de un módulo no afecta a los otros.
-- **Orden determinístico**: tanto el prompt como el schema ordenan los módulos según `VALID_MODULES`, no según el orden del request. Inputs equivalentes producen prompts idénticos; útil para debugging y para cualquier futura cache de prompts.
-- **Versión "live" del prompt distinta de la standalone**: muletillas/consistency ya estaban diseñados para habla libre; accentuation y pronunciation se reformularon para evaluar habla libre sin frase target. La versión standalone (que sí pide phrase_text) sigue intacta. Las dos versiones cubren productos diferentes.
-- **Mismo formula de score que standalone**: `_muletillas_score`, `_accentuation_score`, etc., en `persist.py` replican la fórmula que cada módulo aplica en su flujo standalone. Una fila live de muletillas se ve igual que una standalone — mismo score, mismas columnas.
-- **`phrases_count=0` y `level='free'`** para accentuation/pronunciation en live: las columnas son NOT NULL en BD, así que no se pueden dejar nulas. `0` y `"free"` son los valores honestos para "habla libre, sin frases discretas evaluadas".
+- **Composable set actual**: `muletillas`, `facial_expression`, `phonation`, `loudness`. `accentuation` y `pronunciation` fueron retirados del set componible de live a favor de los dos client-side modules que cuestan cero llamadas a Gemini y tienen latencia mínima. Los módulos standalone de pron/acc siguen intactos en sus páginas dedicadas.
+- **Gemini solo evalúa muletillas**: los otros tres se computan 100% en el navegador y submiten su `*_summary` como JSON en la request. El endpoint short-circuitea la llamada a Gemini cuando ninguno de los módulos seleccionados es evaluable por audio (`AUDIO_COMPOSABLE_MODULES`).
+- **Prompts y schemas separados por módulo**: cada sección Gemini se mantiene como constante privada. El composer arma la unión según los módulos seleccionados.
+- **Orden determinístico**: tanto el prompt como el schema ordenan los módulos según `VALID_MODULES`. Inputs equivalentes producen prompts idénticos.
+- **Versión "live" del prompt distinta de la standalone**: muletillas standalone asume `question_text`; live es habla libre. Las dos versiones cubren productos diferentes.
+- **Score del child phonation = stability_score**: replica el patrón del módulo standalone. `exercises_count=0` porque la live es una sola grabación, no una serie de ejercicios.
+- **Score del child loudness = optimal_pct**: porcentaje del tiempo dentro de la banda óptima. Los cuatro pcts son re-normalizados server-side para garantizar suma=100 (BD CHECK constraint).
+- **`preset_id` obligatorio para loudness**: la tabla referencia `loudness_presets` por FK. Si el cliente no manda preset_id, ese child se omite (no se inventa default).
 - **Live finalize compatible sin cambios**: `_avg_completed_children_score` ya promediaba sobre hijos `completed` con `score IS NOT NULL`, así que cualquier hijo creado por el endpoint de audio-evaluation entra automáticamente al cálculo agregado.
 - **No mínimo de bytes**: dejar la decisión de "hay habla suficiente" a Gemini vía `audio_intelligible`. Distintos codecs tienen bitrates muy distintos, y un threshold fijo en bytes daría falsos negativos en algunas plataformas.
 - **`gemini_response` se devuelve crudo al cliente**: el frontend tiene la información rica (feedback, muletillas detectadas, etc.) sin GETs adicionales, pero todo lo no persistido es ephemeral. Si en el futuro se quiere historial detallado del feedback, hay que crear tablas para esos campos.

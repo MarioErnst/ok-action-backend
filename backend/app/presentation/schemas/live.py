@@ -27,7 +27,12 @@ class FinalizeSessionRequest(BaseModel):
     completed. Omit the body (or pass auto_stop_reason=None) for the
     standard natural-completion case."""
 
-    auto_stop_reason: Literal["auto_stop_strikes", "auto_stop_emotion"] | None = None
+    auto_stop_reason: Literal[
+        "auto_stop_strikes",
+        "auto_stop_emotion",
+        "auto_stop_loudness",
+        "auto_stop_phonation",
+    ] | None = None
 
 
 class FacialSummaryInput(BaseModel):
@@ -61,6 +66,43 @@ class FacialSummaryInput(BaseModel):
         return self
 
 
+class PhonationSummaryInput(BaseModel):
+    """Phonation metrics computed in the browser from the AudioWorklet
+    pitch frames during a live session. Submitted alongside the audio
+    in the composed evaluation request when phonation is among the
+    selected modules.
+
+    avg_hz is fundamental frequency in Hz; stability_score is the
+    derived 0..100 metric (mirrors the standalone phonation module);
+    breaks_count is a non-negative integer counting sudden pitch jumps."""
+
+    avg_hz: float = Field(ge=0)
+    stability_score: int = Field(ge=0, le=100)
+    breaks_count: int = Field(ge=0)
+
+
+class LoudnessSummaryInput(BaseModel):
+    """Loudness metrics computed in the browser from the per-frame band
+    classifier during a live session. Submitted alongside the audio in
+    the composed evaluation request when loudness is among the selected
+    modules.
+
+    preset_id is required because loudness_metrics references
+    loudness_presets via FK. The four percentages each fall in 0..100;
+    the backend re-normalizes them so they sum exactly to 100 before
+    persisting (the BD CHECK constraint requires it). peak_db is the
+    maximum dB observed during the session; noise_floor_db is the
+    ambient floor measured during pre-session calibration (optional)."""
+
+    preset_id: UUID
+    optimal_pct: int = Field(ge=0, le=100)
+    low_pct: int = Field(ge=0, le=100)
+    high_pct: int = Field(ge=0, le=100)
+    clipping_pct: int = Field(ge=0, le=100)
+    peak_db: float
+    noise_floor_db: float | None = None
+
+
 # Outputs
 
 
@@ -78,6 +120,8 @@ class FinalizeSessionResponse(BaseModel):
         "completed",
         "auto_stop_strikes",
         "auto_stop_emotion",
+        "auto_stop_loudness",
+        "auto_stop_phonation",
     ]
 
 
@@ -105,6 +149,8 @@ class LiveMetricsOutput(BaseModel):
         "completed",
         "auto_stop_strikes",
         "auto_stop_emotion",
+        "auto_stop_loudness",
+        "auto_stop_phonation",
     ]
 
 
@@ -136,6 +182,8 @@ class LiveSessionListItem(BaseModel):
         "completed",
         "auto_stop_strikes",
         "auto_stop_emotion",
+        "auto_stop_loudness",
+        "auto_stop_phonation",
     ] | None
 
 

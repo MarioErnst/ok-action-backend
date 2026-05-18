@@ -28,11 +28,13 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.accentuation_metrics import AccentuationMetrics
+from decimal import Decimal
+
 from app.domain.entities.enums import ModuleEnum, SessionStatusEnum, TopEmotionEnum
 from app.domain.entities.facial_expression_metrics import FacialExpressionMetrics
+from app.domain.entities.loudness_metrics import LoudnessMetrics
 from app.domain.entities.muletillas_metrics import MuletillasMetrics
-from app.domain.entities.pronunciation_metrics import PronunciationMetrics
+from app.domain.entities.phonation_metrics import PhonationMetrics
 from app.domain.entities.session import Session
 from app.domain.entities.user import User
 from app.use_cases.live.composed.prompts import ComposableModule
@@ -64,32 +66,6 @@ def _muletillas_score(section: dict) -> int:
     """Mirror standalone muletillas: session score equals fluency_score."""
 
     return _clamp_pct(section.get("fluency_score"))
-
-
-def _accentuation_score(section: dict) -> int:
-    """Mirror standalone accentuation: session score is the rounded average
-    of the four sub-scores."""
-
-    sub = [
-        _clamp_pct(section.get("pronunciation_score")),
-        _clamp_pct(section.get("rhythm_score")),
-        _clamp_pct(section.get("intonation_score")),
-        _clamp_pct(section.get("stress_score")),
-    ]
-    return round(sum(sub) / len(sub))
-
-
-def _pronunciation_score(section: dict) -> int:
-    """Mirror standalone pronunciation: session score is the rounded
-    average of the four sub-scores."""
-
-    sub = [
-        _clamp_pct(section.get("vowel_score")),
-        _clamp_pct(section.get("consonant_score")),
-        _clamp_pct(section.get("fluency_score")),
-        _clamp_pct(section.get("intelligibility_score")),
-    ]
-    return round(sum(sub) / len(sub))
 
 
 def _normalize_facial_pcts(summary: dict) -> dict[str, int]:
@@ -144,6 +120,8 @@ async def persist_composed_evaluation(
     modules: list[ComposableModule],
     gemini_response: dict,
     facial_summary: dict | None = None,
+    phonation_summary: dict | None = None,
+    loudness_summary: dict | None = None,
 ) -> list[tuple[Session, object]]:
     """Insert one child session + metrics row per selected module.
 
@@ -190,46 +168,105 @@ async def persist_composed_evaluation(
             db.add(metrics_row)
             created.append((session_row, metrics_row))
 
-        elif module == "accentuation":
-            if not audio_intelligible:
+        elif module == "phonation":
+            if not phonation_summary:
                 continue
-            section = gemini_response.get("accentuation")
-            if not isinstance(section, dict):
-                continue
-            score = _accentuation_score(section)
+            # Client computes avg_hz, stability_score and breaks_count
+            # from the AudioWorklet pitch frames. We trust the client
+            # to send 0-100 for stability and non-negative integers for
+            # counts; the entity CHECK constraint enforces the range.
+            try:
+                avg_hz = Decimal(str(phonation_summary.get("avg_hz", 0)))
+            except (TypeError, ValueError):
+                avg_hz = Decimal("0")
+            stability_score = _clamp_pct(phonation_summary.get("stability_score"))
+            breaks_count = _safe_int(phonation_summary.get("breaks_count"))
+            # Live session is a single recording, not an exercise count.
+            # We persist exercises_count=0 to make sessions created here
+            # honest about their origin.
             session_row = Session(
                 user_id=user.id,
-                module=ModuleEnum.accentuation,
+                module=ModuleEnum.phonation,
                 parent_id=parent_live_id,
                 started_at=started_at,
                 ended_at=ended_at,
                 duration_ms=duration_ms,
-                score=score,
+                score=stability_score,
                 status=SessionStatusEnum.completed,
             )
             db.add(session_row)
             await db.flush()
-            metrics_row = AccentuationMetrics(
+            metrics_row = PhonationMetrics(
                 session_id=session_row.id,
-                pronunciation_score=_clamp_pct(section.get("pronunciation_score")),
-                rhythm_score=_clamp_pct(section.get("rhythm_score")),
-                intonation_score=_clamp_pct(section.get("intonation_score")),
-                stress_score=_clamp_pct(section.get("stress_score")),
-                phrases_count=0,
+                avg_hz=avg_hz,
+                stability_score=stability_score,
+                breaks_count=breaks_count,
+                exercises_count=0,
             )
             db.add(metrics_row)
             created.append((session_row, metrics_row))
 
-        elif module == "pronunciation":
-            if not audio_intelligible:
+        elif module == "loudness":
+            if not loudness_summary:
                 continue
-            section = gemini_response.get("pronunciation")
-            if not isinstance(section, dict):
+            # Client classifies each audio frame into one of five bands
+            # via loudnessClassifier and submits the resulting
+            # percentages + peak dB + the preset id that was used.
+            # preset_id is required because loudness_metrics references
+            # loudness_presets via FK; skip the row if missing rather
+            # than synthesizing a default.
+            preset_id_raw = loudness_summary.get("preset_id")
+            if not preset_id_raw:
                 continue
-            score = _pronunciation_score(section)
+            try:
+                preset_uuid = UUID(str(preset_id_raw))
+            except (TypeError, ValueError):
+                continue
+            optimal_pct = _clamp_pct(loudness_summary.get("optimal_pct"))
+            low_pct = _clamp_pct(loudness_summary.get("low_pct"))
+            high_pct = _clamp_pct(loudness_summary.get("high_pct"))
+            clipping_pct = _clamp_pct(loudness_summary.get("clipping_pct"))
+            # Re-normalize so the four percentages sum to 100 (BD CHECK
+            # enforces total=100). Same approach as facial pcts.
+            total = optimal_pct + low_pct + high_pct + clipping_pct
+            if total == 0:
+                # No frames classified; the row would be meaningless.
+                continue
+            if total != 100:
+                # Scale + assign residual to the highest band.
+                buckets = {
+                    "optimal_pct": int(optimal_pct * 100 / total),
+                    "low_pct": int(low_pct * 100 / total),
+                    "high_pct": int(high_pct * 100 / total),
+                    "clipping_pct": int(clipping_pct * 100 / total),
+                }
+                residual = 100 - sum(buckets.values())
+                if residual != 0:
+                    top_key = max(buckets, key=lambda k: buckets[k])
+                    buckets[top_key] += residual
+                optimal_pct = buckets["optimal_pct"]
+                low_pct = buckets["low_pct"]
+                high_pct = buckets["high_pct"]
+                clipping_pct = buckets["clipping_pct"]
+            try:
+                peak_db = Decimal(str(loudness_summary.get("peak_db", 0)))
+            except (TypeError, ValueError):
+                peak_db = Decimal("0")
+            noise_floor_raw = loudness_summary.get("noise_floor_db")
+            noise_floor_db: Decimal | None
+            if noise_floor_raw is None:
+                noise_floor_db = None
+            else:
+                try:
+                    noise_floor_db = Decimal(str(noise_floor_raw))
+                except (TypeError, ValueError):
+                    noise_floor_db = None
+            # Session score is the optimal_pct: how much of the
+            # recording the student spent within the target band.
+            score = optimal_pct
             session_row = Session(
                 user_id=user.id,
-                module=ModuleEnum.pronunciation,
+                module=ModuleEnum.loudness,
                 parent_id=parent_live_id,
                 started_at=started_at,
                 ended_at=ended_at,
@@ -239,14 +276,15 @@ async def persist_composed_evaluation(
             )
             db.add(session_row)
             await db.flush()
-            metrics_row = PronunciationMetrics(
+            metrics_row = LoudnessMetrics(
                 session_id=session_row.id,
-                level="free",
-                vowel_score=_clamp_pct(section.get("vowel_score")),
-                consonant_score=_clamp_pct(section.get("consonant_score")),
-                fluency_score=_clamp_pct(section.get("fluency_score")),
-                intelligibility_score=_clamp_pct(section.get("intelligibility_score")),
-                phrases_count=0,
+                preset_id=preset_uuid,
+                optimal_pct=optimal_pct,
+                low_pct=low_pct,
+                high_pct=high_pct,
+                clipping_pct=clipping_pct,
+                peak_db=peak_db,
+                noise_floor_db=noise_floor_db,
             )
             db.add(metrics_row)
             created.append((session_row, metrics_row))

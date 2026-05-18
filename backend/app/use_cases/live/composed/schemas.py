@@ -1,17 +1,10 @@
 """Composed Gemini response schema builder for live audio evaluation.
 
-Mirrors the prompt sections in prompts.py: each audio module contributes a
-top-level key to the unified response schema, and only the selected modules
-appear in the schema. The shape per module is intentionally smaller than the
-standalone schemas: live evaluation persists only the columns that exist in
-<modulo>_metrics, so we ask Gemini for those plus a feedback string per
-module. Anything else (per-event timelines, phoneme-level errors) would just
-be discarded.
-
-facial_expression is a valid composable from the client's perspective but
-its data does not come from Gemini's text response — it comes from the
-client's emotion classifier and is submitted directly to the finalize
-endpoint. The schema therefore does not include a facial_expression key.
+Mirrors the prompt section in prompts.py: today the only module Gemini
+evaluates from the audio is muletillas. facial_expression, phonation
+and loudness are computed client-side and submitted alongside the
+audio in the composed evaluation request; this schema therefore does
+not include keys for them.
 
 Field types are strict integers (not numbers) to avoid floats that violate
 Pydantic int validation downstream — same rule we adopted in the standalone
@@ -73,88 +66,8 @@ _MULETILLAS_SECTION_SCHEMA = {
 }
 
 
-# Each prosodic error anchors to a word that must appear in the root
-# transcript. Backend does not persist these; they travel in the HTTP
-# response for the UI and enforce Gemini's anti-hallucination contract.
-_PROSODIC_ERROR_ITEM = {
-    "type": "object",
-    "properties": {
-        "word": {"type": "string"},
-        "expected_stress": {"type": "string"},
-        "actual_issue": {"type": "string"},
-        "suggestion": {"type": "string"},
-    },
-    "required": ["word", "expected_stress", "actual_issue", "suggestion"],
-}
-
-
-_ACCENTUATION_SECTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "pronunciation_score": {"type": "integer"},
-        "rhythm_score": {"type": "integer"},
-        "intonation_score": {"type": "integer"},
-        "stress_score": {"type": "integer"},
-        "prosodic_errors": {
-            "type": "array",
-            "items": _PROSODIC_ERROR_ITEM,
-        },
-        "feedback": {"type": "string"},
-    },
-    "required": [
-        "pronunciation_score",
-        "rhythm_score",
-        "intonation_score",
-        "stress_score",
-        "prosodic_errors",
-        "feedback",
-    ],
-}
-
-
-# Each phoneme error anchors to a word that must appear in the root
-# transcript. Backend does not persist this list; it travels in the HTTP
-# response for the UI and to enforce Gemini's anti-hallucination contract.
-_PHONEME_ERROR_ITEM = {
-    "type": "object",
-    "properties": {
-        "phoneme": {"type": "string"},
-        "word": {"type": "string"},
-        "actual_issue": {"type": "string"},
-        "suggestion": {"type": "string"},
-    },
-    "required": ["phoneme", "word", "actual_issue", "suggestion"],
-}
-
-
-_PRONUNCIATION_SECTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "vowel_score": {"type": "integer"},
-        "consonant_score": {"type": "integer"},
-        "fluency_score": {"type": "integer"},
-        "intelligibility_score": {"type": "integer"},
-        "phoneme_errors": {
-            "type": "array",
-            "items": _PHONEME_ERROR_ITEM,
-        },
-        "feedback": {"type": "string"},
-    },
-    "required": [
-        "vowel_score",
-        "consonant_score",
-        "fluency_score",
-        "intelligibility_score",
-        "phoneme_errors",
-        "feedback",
-    ],
-}
-
-
 _SCHEMA_BY_MODULE: dict[ComposableModule, dict[str, Any]] = {
     "muletillas": _MULETILLAS_SECTION_SCHEMA,
-    "accentuation": _ACCENTUATION_SECTION_SCHEMA,
-    "pronunciation": _PRONUNCIATION_SECTION_SCHEMA,
 }
 
 

@@ -44,11 +44,95 @@ from typing import Awaitable, Callable, Literal
 
 from app.infrastructure.ai.live_stream_assemblyai import (
     AssemblyAIStreamingSession,
+    TurnTranscript,
+)
+from app.infrastructure.ai.muletillas_context_classifier_gemini import (
+    AmbiguousCandidate,
+    MuletillaContextClassifier,
+    MuletillaContextClassifierError,
 )
 from app.use_cases.live.streaming.muletillas_dictionary import (
     MuletillaMatch,
     extract_muletillas,
 )
+
+
+# Number of consecutive partials a match must appear in (at the same
+# word + start_char position) before we trust it enough to fire a
+# strike. Empirically AssemblyAI Universal-3 Pro Streaming emits very
+# few partials per turn (1-2 in long discourses) so a higher threshold
+# starves the live corten: matches never stabilize and always fall to
+# the final fallback. Threshold = 1 means "emit on first partial
+# appearance". The risk of the model rewriting an early partial is
+# tolerable: Universal-3 Pro is a transcriber (not a conversational
+# model) so it rarely walks back filler-word tokens once it has placed
+# them. If we ever observe enough false positives from this mode we can
+# bump it back to 2 — but that requires the model to actually emit
+# multiple partials per turn, which today it does not.
+_STABILITY_THRESHOLD = 1
+
+
+class _TurnStabilityTracker:
+    """Tracks how often each match has appeared across consecutive partials.
+
+    Resets per turn (the caller calls reset() on every final). Returns
+    only the matches that became stable on this exact partial and have
+    not been emitted yet, so the caller can fire one strike per match.
+
+    Stability is keyed by (word, start_char). AssemblyAI partials are
+    additive in practice (transcripts grow forward) so the start_char
+    of a word that already appeared stays stable. If the model ever
+    rewrites the beginning of a partial the affected matches will not
+    stabilize and the final fallback will pick them up — strictly
+    worse latency but never wrong.
+    """
+
+    def __init__(self, stability_threshold: int = _STABILITY_THRESHOLD):
+        self._threshold = stability_threshold
+        # Consecutive-partial counter per key.
+        self._counts: dict[str, int] = {}
+        # Keys that already produced a strike this turn.
+        self._emitted: set[str] = set()
+
+    @staticmethod
+    def _key(match: MuletillaMatch) -> str:
+        return f"{match.word}@{match.start_char}"
+
+    def feed_partial(self, transcript: str) -> list[MuletillaMatch]:
+        """Return matches that just stabilized on this partial.
+
+        Each returned match is also recorded as already-emitted so a
+        later call (including the final transcript) will not re-emit it.
+        """
+
+        matches = extract_muletillas(transcript)
+        current_keys: set[str] = set()
+        newly_stable: list[MuletillaMatch] = []
+        for match in matches:
+            key = self._key(match)
+            current_keys.add(key)
+            self._counts[key] = self._counts.get(key, 0) + 1
+            if (
+                self._counts[key] >= self._threshold
+                and key not in self._emitted
+            ):
+                self._emitted.add(key)
+                newly_stable.append(match)
+        # Reset counters for keys that disappeared this partial so
+        # future reappearances start over and need to re-stabilize.
+        for key in set(self._counts.keys()) - current_keys:
+            self._counts[key] = 0
+        return newly_stable
+
+    def feed_final(self, transcript: str) -> list[MuletillaMatch]:
+        """Return matches in the final that were not already emitted via partials."""
+
+        matches = extract_muletillas(transcript)
+        return [m for m in matches if self._key(m) not in self._emitted]
+
+    def reset(self) -> None:
+        self._counts = {}
+        self._emitted = set()
 
 
 logger = logging.getLogger(__name__)
@@ -105,6 +189,7 @@ class LiveStreamSupervisor:
         self,
         modules: list[LiveStreamModule],
         strike_sink: StrikeSink,
+        context_classifier: MuletillaContextClassifier | None = None,
     ):
         if not modules:
             raise ValueError("supervisor requires at least one module")
@@ -115,14 +200,29 @@ class LiveStreamSupervisor:
             )
         self._modules = modules
         self._strike_sink = strike_sink
+        # Injectable for tests; production builds the default Gemini
+        # client lazily to avoid the API key check at module import.
+        self._context_classifier = context_classifier or MuletillaContextClassifier()
         self._receive_task: asyncio.Task | None = None
+        # Per-turn stability tracker. Reset on every final so each turn
+        # starts fresh.
+        self._stability = _TurnStabilityTracker()
         # Session totals surfaced in the closing log so a single line at
         # the end of each session reports everything we care about for
-        # diagnostics (chunks streamed, transcripts received, strikes
-        # emitted, strikes dropped by the sink).
-        self._transcripts_received = 0
+        # diagnostics (chunks streamed, partials/finals received, strikes
+        # emitted, strikes dropped by sink, ambiguous matches dropped by
+        # the classifier, classifier failures that forced a drop and
+        # how many strikes came from a stabilized partial vs the final
+        # fallback so we can tell whether partials are actually paying
+        # off).
+        self._partials_received = 0
+        self._finals_received = 0
         self._strikes_emitted = 0
+        self._strikes_from_partial = 0
+        self._strikes_from_final = 0
         self._sink_errors = 0
+        self._ambiguous_dropped = 0
+        self._classifier_errors = 0
 
     async def run(self, audio_iter) -> None:
         """Drive the session until audio_iter ends or AssemblyAI dies.
@@ -170,46 +270,199 @@ class LiveStreamSupervisor:
                         pass
                 self._receive_task = None
                 logger.info(
-                    "[supervisor] finished (chunks_in=%d transcripts=%d strikes=%d sink_errors=%d)",
+                    "[supervisor] finished (chunks_in=%d partials=%d finals=%d "
+                    "strikes=%d (from_partial=%d from_final=%d) "
+                    "sink_errors=%d ambiguous_dropped=%d classifier_errors=%d)",
                     chunks_received,
-                    self._transcripts_received,
+                    self._partials_received,
+                    self._finals_received,
                     self._strikes_emitted,
+                    self._strikes_from_partial,
+                    self._strikes_from_final,
                     self._sink_errors,
+                    self._ambiguous_dropped,
+                    self._classifier_errors,
                 )
 
     async def _receive_loop(
         self, session: AssemblyAIStreamingSession
     ) -> None:
-        """Consume final transcripts from AssemblyAI."""
+        """Consume turn transcripts (partials + finals) from AssemblyAI."""
 
         logger.info("[supervisor] receive loop started")
         try:
-            async for transcript in session.iter_final_transcripts():
-                await self._process_transcript(transcript)
+            async for turn in session.iter_turn_transcripts():
+                await self._handle_turn(turn)
         finally:
             logger.info("[supervisor] receive loop ended")
 
-    async def _process_transcript(self, transcript: str) -> None:
-        """Run the matcher and emit a strike per detected muletilla."""
+    async def _handle_turn(self, turn: TurnTranscript) -> None:
+        """Route a partial or final to the right matching path.
 
-        self._transcripts_received += 1
-        matches = extract_muletillas(transcript)
+        Partials feed the stability tracker and only emit strikes for
+        matches that just stabilized on this exact partial. Finals
+        cover any match that did not have enough partials to stabilize
+        (rare but possible for short turns) and then reset the tracker
+        so the next turn starts fresh.
+        """
+
+        if turn.is_final:
+            self._finals_received += 1
+            matches = self._stability.feed_final(turn.text)
+            await self._emit_matches(
+                matches, source="final", reference_text=turn.text
+            )
+            # New turn opens after a final, so the tracker must forget
+            # everything we accumulated for the previous one.
+            self._stability.reset()
+        else:
+            self._partials_received += 1
+            matches = self._stability.feed_partial(turn.text)
+            if not matches:
+                return
+            await self._emit_matches(
+                matches, source="partial", reference_text=turn.text
+            )
+
+    async def _emit_matches(
+        self,
+        matches: list[MuletillaMatch],
+        source: Literal["partial", "final"],
+        reference_text: str,
+    ) -> None:
+        """Emit a batch of matches, routing ambiguous ones through the LLM.
+
+        Unambiguous matches go straight to the sink. Ambiguous ones are
+        batched into a single Gemini Flash-Lite call that confirms which
+        are real fillers in context; the rest are dropped. The hybrid
+        keeps zero LLM latency for the common interjections (eh, mmm,
+        ah, viste, digamos, o sea) and pays the LLM cost only when a
+        content-word filler like "tipo" or "este" appears.
+
+        Concurrency: the classifier runs in the background so the
+        unambiguous matches reach the client immediately while the LLM
+        decides on the ambiguous ones. The strike threshold on the
+        frontend is 1, so this lets the corten fire on the first 'eh'
+        without waiting ~1 s for an ambiguous 'tipo' that may share the
+        same partial.
+
+        `source` and `reference_text` are only used in logs so we can
+        tell at a glance which strikes came from a stabilized partial
+        vs the final fallback.
+        """
+
         if not matches:
             return
-        for match in matches:
-            event = self._build_event(match)
-            self._strikes_emitted += 1
-            logger.info(
-                "[supervisor] STRIKE category=%s word=%r snippet=%r",
-                event.category,
-                event.word,
-                event.transcript_snippet,
+
+        t_start = time.perf_counter()
+        unambiguous = [m for m in matches if not m.is_ambiguous]
+        ambiguous = [m for m in matches if m.is_ambiguous]
+
+        # Kick the classifier off before emitting unambiguous matches so
+        # the LLM round-trip overlaps with the WS sink for the common
+        # interjections.
+        classifier_task: asyncio.Task[set[int]] | None = None
+        t_clf_start: float | None = None
+        if ambiguous:
+            candidates = [
+                AmbiguousCandidate(
+                    index=i,
+                    word=m.word,
+                    context_snippet=m.context_snippet,
+                )
+                for i, m in enumerate(ambiguous)
+            ]
+            t_clf_start = time.perf_counter()
+            classifier_task = asyncio.create_task(
+                self._context_classifier.classify(reference_text, candidates)
             )
+
+        for match in unambiguous:
+            await self._emit_match(match, source)
+        t_unambiguous_done = time.perf_counter()
+
+        confirmed_ambiguous: list[MuletillaMatch] = []
+        classifier_ms: float | None = None
+        if classifier_task is not None and t_clf_start is not None:
             try:
-                await self._strike_sink(event)
-            except Exception as exc:
-                self._sink_errors += 1
-                logger.warning("[supervisor] strike sink raised: %s", exc)
+                confirmed_indices = await classifier_task
+            except MuletillaContextClassifierError as exc:
+                # Precision-first fallback: drop every ambiguous match so
+                # the user is never interrupted for a content word.
+                self._classifier_errors += 1
+                self._ambiguous_dropped += len(ambiguous)
+                classifier_ms = (time.perf_counter() - t_clf_start) * 1000
+                logger.warning(
+                    "[supervisor] classifier failed, dropping %d ambiguous "
+                    "matches: %s (classifier_ms=%.0f)",
+                    len(ambiguous),
+                    exc,
+                    classifier_ms,
+                )
+                confirmed_indices = set()
+            else:
+                classifier_ms = (time.perf_counter() - t_clf_start) * 1000
+
+            for index, match in enumerate(ambiguous):
+                if index in confirmed_indices:
+                    confirmed_ambiguous.append(match)
+                else:
+                    self._ambiguous_dropped += 1
+                    logger.info(
+                        "[supervisor] dropped ambiguous match (source=%s) "
+                        "word=%r snippet=%r",
+                        source,
+                        match.word,
+                        match.context_snippet,
+                    )
+
+        for match in confirmed_ambiguous:
+            await self._emit_match(match, source)
+        t_emitted = time.perf_counter()
+
+        # Single summary line per batch so a tail -f gives a clear
+        # latency breakdown without spamming one log per stage.
+        logger.info(
+            "[supervisor] batch processed source=%s "
+            "(matches=%d unambiguous=%d ambiguous=%d confirmed=%d "
+            "unambiguous_emit_ms=%.0f classifier_ms=%s total_ms=%.0f)",
+            source,
+            len(matches),
+            len(unambiguous),
+            len(ambiguous),
+            len(confirmed_ambiguous),
+            (t_unambiguous_done - t_start) * 1000,
+            f"{classifier_ms:.0f}" if classifier_ms is not None else "skipped",
+            (t_emitted - t_start) * 1000,
+        )
+
+    async def _emit_match(
+        self,
+        match: MuletillaMatch,
+        source: Literal["partial", "final"],
+    ) -> None:
+        """Send one strike through the sink, accounting for sink errors."""
+
+        event = self._build_event(match)
+        self._strikes_emitted += 1
+        if source == "partial":
+            self._strikes_from_partial += 1
+        else:
+            self._strikes_from_final += 1
+        logger.info(
+            "[supervisor] STRIKE category=%s word=%r snippet=%r "
+            "ambiguous=%s source=%s",
+            event.category,
+            event.word,
+            event.transcript_snippet,
+            match.is_ambiguous,
+            source,
+        )
+        try:
+            await self._strike_sink(event)
+        except Exception as exc:
+            self._sink_errors += 1
+            logger.warning("[supervisor] strike sink raised: %s", exc)
 
     def _build_event(self, match: MuletillaMatch) -> StrikeEvent:
         return StrikeEvent(

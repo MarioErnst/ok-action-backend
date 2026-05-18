@@ -19,12 +19,13 @@ Implementation notes:
   token level. We tokenize once per transcript.
 - Unigrams cover the bulk of muletillas. Bigrams cover compound
   fillers ("o sea", "o sé").
-- We do not try to disambiguate context-dependent words (e.g. "como"
-  can be a filler or a normal preposition). Filtering by context
-  produces brittle heuristics — for v1 we keep the conservative list
-  below and accept the occasional false positive on commonly-ambiguous
-  words. The list is easy to trim if a specific token shows up too
-  often as noise in real sessions.
+- Two unigram groups: "unambiguous" tokens always count as filler
+  (interjections such as "eh", "mmm"), "ambiguous" tokens (e.g.
+  "tipo", "este") need contextual disambiguation because they double
+  as real Spanish words. The dictionary itself does not decide for
+  ambiguous matches — it only flags them via `is_ambiguous` on the
+  match record. The caller (today: the streaming supervisor) routes
+  ambiguous matches through an LLM classifier before emitting a strike.
 """
 
 from __future__ import annotations
@@ -33,17 +34,15 @@ import re
 from dataclasses import dataclass
 
 
-# Single tokens that count as muletilla on every occurrence. Lowercase.
-# Kept narrow on purpose: include only tokens that are overwhelmingly
-# used as fillers, even at the cost of missing the long tail.
-SPANISH_FILLER_UNIGRAMS: frozenset[str] = frozenset(
+# Single tokens that are overwhelmingly used as fillers and have no
+# common alternative meaning that would survive the tokenizer (these
+# are mostly interjection-only forms). Match these directly without
+# context.
+SPANISH_FILLER_UNAMBIGUOUS_UNIGRAMS: frozenset[str] = frozenset(
     {
         "eh",
         "ehh",
         "ehhh",
-        "este",
-        "esto",
-        "esta",
         "mmm",
         "mm",
         "mmmm",
@@ -51,10 +50,34 @@ SPANISH_FILLER_UNIGRAMS: frozenset[str] = frozenset(
         "ahh",
         "ahhh",
         "viste",
-        "tipo",
-        "pues",
         "digamos",
     }
+)
+
+
+# Tokens that double as both filler and real Spanish content words.
+# Matches against these get tagged with `is_ambiguous=True` so the
+# caller can route them through an LLM contextual classifier instead
+# of trusting the dictionary alone. Examples:
+# - "tipo" is a noun ("ningún tipo de") but also a filler ("y tipo,").
+# - "este/esta/esto" are demonstratives ("este auto") but also fillers
+#   ("este, lo que pasa..."). Same for "pues" (causal) vs filler.
+SPANISH_FILLER_AMBIGUOUS_UNIGRAMS: frozenset[str] = frozenset(
+    {
+        "este",
+        "esto",
+        "esta",
+        "tipo",
+        "pues",
+    }
+)
+
+
+# Union exposed for any caller that needs the full token set (e.g.,
+# AssemblyAI keyterm boosting). Production code that classifies should
+# use the split sets above.
+SPANISH_FILLER_UNIGRAMS: frozenset[str] = (
+    SPANISH_FILLER_UNAMBIGUOUS_UNIGRAMS | SPANISH_FILLER_AMBIGUOUS_UNIGRAMS
 )
 
 
@@ -79,12 +102,16 @@ class MuletillaMatch:
     positions inside the original transcript string so the UI can
     underline the exact segment. `context_snippet` is the surrounding
     sentence-ish fragment we send back to the client as evidence.
+    `is_ambiguous` is True when the token doubles as a real Spanish
+    content word; the caller should disambiguate via an LLM before
+    treating the match as a real strike.
     """
 
     word: str
     start_char: int
     end_char: int
     context_snippet: str
+    is_ambiguous: bool
 
 
 # Tokenizer that yields (token_lower, start_char, end_char) tuples.
@@ -140,6 +167,8 @@ def extract_muletillas(transcript: str) -> list[MuletillaMatch]:
             pair = (token, next_token)
             if pair in SPANISH_FILLER_BIGRAMS:
                 canonical = f"{token} {next_token}"
+                # All current bigrams ("o sea", "o sé") are unambiguous
+                # fillers in Spanish so we tag them accordingly.
                 matches.append(
                     MuletillaMatch(
                         word=canonical,
@@ -148,6 +177,7 @@ def extract_muletillas(transcript: str) -> list[MuletillaMatch]:
                         context_snippet=_context_snippet(
                             transcript, start_char, next_end
                         ),
+                        is_ambiguous=False,
                     )
                 )
                 consumed_until_index = index + 1
@@ -162,6 +192,7 @@ def extract_muletillas(transcript: str) -> list[MuletillaMatch]:
                     context_snippet=_context_snippet(
                         transcript, start_char, end_char
                     ),
+                    is_ambiguous=token in SPANISH_FILLER_AMBIGUOUS_UNIGRAMS,
                 )
             )
 

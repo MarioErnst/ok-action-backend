@@ -30,6 +30,8 @@ class StopReasonEnum(str, enum.Enum):
     completed = "completed"
     auto_stop_strikes = "auto_stop_strikes"
     auto_stop_emotion = "auto_stop_emotion"
+    auto_stop_loudness = "auto_stop_loudness"
+    auto_stop_phonation = "auto_stop_phonation"
 
 
 class ExerciseTypeEnum(str, enum.Enum):

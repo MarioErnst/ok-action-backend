@@ -137,7 +137,12 @@ async def _avg_completed_children_score(
 
 
 _AUTO_STOP_REASONS = frozenset(
-    {StopReasonEnum.auto_stop_strikes, StopReasonEnum.auto_stop_emotion}
+    {
+        StopReasonEnum.auto_stop_strikes,
+        StopReasonEnum.auto_stop_emotion,
+        StopReasonEnum.auto_stop_loudness,
+        StopReasonEnum.auto_stop_phonation,
+    }
 )
 
 

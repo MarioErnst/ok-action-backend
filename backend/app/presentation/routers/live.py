@@ -33,6 +33,8 @@ from app.presentation.schemas.live import (
     LiveMetricsOutput,
     LiveSessionDetail,
     LiveSessionListItem,
+    LoudnessSummaryInput,
+    PhonationSummaryInput,
     StartSessionResponse,
 )
 from app.use_cases.live.composed.persist import persist_composed_evaluation
@@ -194,6 +196,8 @@ async def evaluate_audio_endpoint(
     started_at: datetime = Form(...),
     prompt_text: str = Form(""),
     facial_summary: str | None = Form(None),
+    phonation_summary: str | None = Form(None),
+    loudness_summary: str | None = Form(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ComposedAudioEvaluationResponse:
@@ -206,10 +210,15 @@ async def evaluate_audio_endpoint(
     the child sessions because the user could only lie about their own
     duration. ended_at is set server-side to now() for honesty.
 
-    facial_summary is an optional JSON-encoded payload containing the
-    seven emotion percentages computed in the browser. It is required
-    only when facial_expression is among the selected modules; otherwise
-    it is ignored.
+    Three client-side modules submit pre-computed summaries:
+
+    - facial_summary: JSON with the seven emotion percentages.
+    - phonation_summary: JSON with avg_hz, stability_score, breaks_count.
+    - loudness_summary: JSON with preset_id, the four band percentages,
+      peak_db and an optional noise_floor_db.
+
+    Each one is required only when its corresponding module is among
+    the selected modules; otherwise it is ignored.
     """
 
     if not modules:
@@ -241,6 +250,38 @@ async def evaluate_audio_endpoint(
                 detail=f"Invalid facial_summary payload: {exc}",
             )
         facial_summary_payload = parsed.model_dump()
+
+    phonation_summary_payload: dict | None = None
+    if "phonation" in composable_modules:
+        if not phonation_summary:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="phonation_summary is required when phonation is selected",
+            )
+        try:
+            parsed_phon = PhonationSummaryInput.model_validate_json(phonation_summary)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid phonation_summary payload: {exc}",
+            )
+        phonation_summary_payload = parsed_phon.model_dump()
+
+    loudness_summary_payload: dict | None = None
+    if "loudness" in composable_modules:
+        if not loudness_summary:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="loudness_summary is required when loudness is selected",
+            )
+        try:
+            parsed_loud = LoudnessSummaryInput.model_validate_json(loudness_summary)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid loudness_summary payload: {exc}",
+            )
+        loudness_summary_payload = parsed_loud.model_dump(mode="json")
 
     try:
         await validate_parent_live_session(db, user, session_id)
@@ -299,6 +340,8 @@ async def evaluate_audio_endpoint(
         modules=composable_modules,
         gemini_response=gemini_response,
         facial_summary=facial_summary_payload,
+        phonation_summary=phonation_summary_payload,
+        loudness_summary=loudness_summary_payload,
     )
 
     return ComposedAudioEvaluationResponse(

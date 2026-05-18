@@ -1,18 +1,18 @@
 """Composed Gemini prompt builder for live audio evaluation.
 
-The standalone prompts of the audio composable modules (muletillas,
-accentuation, pronunciation) assume specific input shapes: muletillas
-expects a question_text, accentuation/pronunciation expect a phrase_text
-being read aloud. Live session is always free speech, so we cannot reuse
-those prompts as-is. Instead we build a single prompt that contains a
-shared free-speech intro and one section per audio module selected.
+The composable modules in a live session today are: muletillas (the
+only one Gemini evaluates from the audio), facial_expression (data
+comes from the browser emotion classifier), phonation and loudness
+(data comes from a browser AudioWorklet that measures pitch/dB).
+Pronunciation and accentuation were removed from the live composable
+set in favor of phonation+loudness, which run client-side with
+predictable cost and latency. Both pron/acc remain available as
+standalone modules with their own pages.
 
-Facial expression is also a composable module from the client's
-perspective, but Gemini does not evaluate it from the audio. The
-facial summary is computed in the browser from the emotion classifier
-and submitted to the finalize endpoint, where persist_composed_evaluation
-handles it separately. This module is therefore intentionally absent
-from the prompt body and the response schema.
+Live session is always free speech, so we cannot reuse the standalone
+muletillas prompt that assumes a question_text. Instead this module
+builds a single prompt that contains the audio gate, the transcript
+contract and the muletillas section.
 """
 
 from __future__ import annotations
@@ -22,32 +22,30 @@ from typing import Literal
 
 ComposableModule = Literal[
     "muletillas",
-    "accentuation",
-    "pronunciation",
     "facial_expression",
+    "phonation",
+    "loudness",
 ]
 
 
 VALID_MODULES: tuple[ComposableModule, ...] = (
     "muletillas",
-    "accentuation",
-    "pronunciation",
     "facial_expression",
+    "phonation",
+    "loudness",
 )
 
 
 # Modules whose evaluation comes back from Gemini's text response.
-# facial_expression is excluded because its data comes from the client.
-_GEMINI_EVALUATED_MODULES: tuple[ComposableModule, ...] = (
-    "muletillas",
-    "accentuation",
-    "pronunciation",
-)
+# facial_expression, phonation and loudness are excluded because their
+# data is produced 100% in the browser and submitted alongside the
+# audio in the composed evaluation request.
+_GEMINI_EVALUATED_MODULES: tuple[ComposableModule, ...] = ("muletillas",)
 
 
 # Public alias used by the router to decide whether to invoke Gemini at
-# all. If a request only selects facial_expression there is nothing the
-# audio model can contribute and the endpoint can short-circuit the call.
+# all. If a request only selects client-side modules there is nothing
+# the audio model can contribute and the endpoint short-circuits the call.
 AUDIO_COMPOSABLE_MODULES: tuple[ComposableModule, ...] = _GEMINI_EVALUATED_MODULES
 
 
@@ -84,10 +82,9 @@ dice en el audio y devuelvelo en el campo `transcript` del JSON raiz. Usa minusc
 puntuacion natural. Si no estas seguro de una palabra, escribe lo que sonó mas cercano
 o usa [inaudible].
 
-ESTA TRANSCRIPCION ES UN CONTRATO. Cada modulo que reporte items anclados (muletillas,
-errores fonemicos, errores prosodicos) DEBE referirse a palabras o segmentos que
-aparezcan literalmente en `transcript`. Si una palabra no aparece en `transcript`, NO
-puedes reportarla como muletilla, error fonemico ni error prosodico. Prefiere reportar
+ESTA TRANSCRIPCION ES UN CONTRATO. Cada muletilla reportada DEBE referirse a una
+palabra o segmento que aparezca literalmente en `transcript`. Si una palabra no
+aparece en `transcript`, NO puedes reportarla como muletilla. Prefiere reportar
 menos antes que inventar."""
 
 
@@ -121,60 +118,8 @@ Devuelve en la seccion "muletillas" del JSON:
 - feedback (string en espanol): retroalimentacion breve y constructiva, minimo 2 oraciones."""
 
 
-_ACCENTUATION_SECTION = """MODULO ACENTUACION:
-Evalua la calidad prosodica general del habla libre. Como no hay frase target,
-analiza el patron acentual sobre las palabras que el estudiante produce: si las
-silabas tonicas estan correctamente marcadas, si la curva melodica es natural,
-si el ritmo de las pausas y grupos foneticos suena fluido para un hablante
-nativo de espanol latinoamericano.
-
-Devuelve en la seccion "accentuation" del JSON:
-- pronunciation_score (entero 0-100): claridad articulatoria general.
-- rhythm_score (entero 0-100): cadencia y ritmo natural del habla.
-- intonation_score (entero 0-100): variacion tonal y curva melodica.
-- stress_score (entero 0-100): correccion de los acentos prosodicos en las palabras producidas.
-- prosodic_errors: lista de errores prosodicos accionables. Cada error es
-  {word, expected_stress, actual_issue, suggestion} donde:
-    * word: la palabra del transcript donde ocurrio el error de acentuacion
-      o entonacion. DEBE aparecer literalmente en `transcript`. Si la
-      palabra no esta en transcript, no reportes este error.
-    * expected_stress: como debio acentuarse o entonarse esa palabra (por
-      ejemplo, "PA-ja-ro" indicando la silaba tonica esperada en mayusculas,
-      o una descripcion breve de la curva melodica correcta).
-    * actual_issue: descripcion breve de como la pronuncio el estudiante.
-    * suggestion: indicacion accionable para corregirlo.
-  Si no hay errores claros, devuelve una lista vacia. NUNCA inventes errores.
-- feedback (string en espanol): retroalimentacion concreta sobre acentuacion en habla libre, minimo 2 oraciones."""
-
-
-_PRONUNCIATION_SECTION = """MODULO PRONUNCIACION:
-Evalua la calidad fonetica general del habla libre. Sin frase target, observa la
-produccion de vocales (apertura, posicion), consonantes (especialmente /r/-/rr/,
-/b/-/v/, /s/, /ll/-/y/, /x/, /d/), transiciones entre sonidos, y la
-inteligibilidad general del estudiante.
-
-Devuelve en la seccion "pronunciation" del JSON:
-- vowel_score (entero 0-100): calidad de produccion de vocales.
-- consonant_score (entero 0-100): calidad de produccion de consonantes.
-- fluency_score (entero 0-100): fluidez fonetica y transiciones entre sonidos.
-- intelligibility_score (entero 0-100): inteligibilidad general para un hablante nativo.
-- phoneme_errors: lista de errores fonemicos accionables. Cada error es
-  {phoneme, word, actual_issue, suggestion} donde:
-    * phoneme: el fonema afectado (ej. "rr", "s", "ll").
-    * word: la palabra del transcript donde ocurrio el error. DEBE aparecer
-      literalmente en `transcript`. Si la palabra no esta en transcript, no
-      reportes este error.
-    * actual_issue: descripcion breve del problema observado en esa palabra.
-    * suggestion: indicacion accionable para corregirlo.
-  Si no hay errores claros, devuelve una lista vacia. NUNCA inventes errores
-  para llenar la lista.
-- feedback (string en espanol): retroalimentacion concreta sobre pronunciacion, minimo 2 oraciones."""
-
-
 _SECTION_BY_MODULE: dict[ComposableModule, str] = {
     "muletillas": _MULETILLAS_SECTION,
-    "accentuation": _ACCENTUATION_SECTION,
-    "pronunciation": _PRONUNCIATION_SECTION,
 }
 
 
@@ -190,13 +135,11 @@ def build_composed_prompt(
     audio module.
 
     The order of sections in the prompt follows VALID_MODULES, not the order of
-    the input list, so equivalent inputs produce identical prompts. This makes
-    prompt caching (if Gemini ever supports it for this content) deterministic
-    and makes the prompt easier to inspect in logs.
+    the input list, so equivalent inputs produce identical prompts.
 
-    Modules not present in _SECTION_BY_MODULE (currently just
-    facial_expression) are silently skipped at the prompt level: they are
-    valid composables but their data does not come from Gemini.
+    Modules not present in _SECTION_BY_MODULE (facial_expression,
+    phonation, loudness today) are silently skipped at the prompt level:
+    they are valid composables but their data does not come from Gemini.
     """
 
     if not modules:
@@ -211,9 +154,9 @@ def build_composed_prompt(
     ]
 
     if not audio_modules:
-        # Caller asked only for facial_expression (or nothing prompt-shaped).
-        # We still need a sane prompt for Gemini to gate audio intelligibility
-        # against, so we ask only for audio_intelligible without any module section.
+        # Caller asked only for client-side modules. We still need a
+        # sane prompt for Gemini to gate audio intelligibility against,
+        # so we ask only for audio_intelligible without any module section.
         # Transcript is also unnecessary when no audio module needs anchoring.
         parts: list[str] = [
             _HEADER,
