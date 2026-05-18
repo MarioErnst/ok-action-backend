@@ -193,16 +193,20 @@ class AssemblyAIStreamingSession:
             transcript = (event.transcript or "").strip()
             if not transcript:
                 return
-            # Partials arrive very frequently (every ~100-300 ms) so we
-            # keep the log line compact. Finals stay loud because they
-            # are the audit point and far less frequent.
+            # Both partials and finals are logged at INFO so we can
+            # measure the real cadence AssemblyAI emits per session.
+            # Partials are truncated to keep the log readable while
+            # still showing the tail (where the latest words land).
             if event.end_of_turn:
                 logger.info(
                     "[live-assemblyai] turn final: %r", transcript
                 )
             else:
-                logger.debug(
-                    "[live-assemblyai] turn partial: %r", transcript
+                tail = transcript[-80:]
+                logger.info(
+                    "[live-assemblyai] turn partial (%d chars): ...%r",
+                    len(transcript),
+                    tail,
                 )
             self._publish(
                 TurnTranscript(text=transcript, is_final=bool(event.end_of_turn))
